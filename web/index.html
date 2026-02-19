@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sauron Eye — Call Graph Visualizer</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --surface2: #1f2937;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --dim:      #484f58;
+      --handler:    #7c3aed;
+      --service:    #1d4ed8;
+      --repository: #047857;
+      --http_client:#b45309;
+      --producer:   #b91c1c;
+      --unknown:    #374151;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg); color: var(--text);
+      height: 100vh; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+
+    /* ── TOPBAR ── */
+    #topbar {
+      height: 46px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center;
+      padding: 0 16px; gap: 12px; flex-shrink: 0;
+    }
+    .logo { font-weight: 700; font-size: 14px; color: #a78bfa; letter-spacing: -0.3px; display: flex; align-items: center; gap: 6px; }
+    .logo span { color: var(--muted); font-weight: 400; font-size: 13px; }
+    .chip {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 2px 8px; font-size: 11px; color: var(--muted);
+    }
+    .chip b { color: var(--text); }
+    .chip.warn { border-color: #b45309; color: #f59e0b; }
+    .chip.warn b { color: #f59e0b; }
+    .chip.err  { border-color: #7f1d1d; color: #f87171; }
+    .chip.err b  { color: #f87171; }
+    #topbar-spacer { flex: 1; }
+    .btn-sm {
+      background: none; border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 12px; border-radius: 5px;
+      cursor: pointer; font-size: 11px; transition: border-color .12s, color .12s;
+    }
+    .btn-sm:hover { border-color: var(--muted); color: var(--text); }
+
+    /* ── MAIN LAYOUT ── */
+    #layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── SIDEBAR ── */
+    #sidebar {
+      width: 252px; background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden; flex-shrink: 0;
+    }
+    #sidebar-title {
+      padding: 10px 14px; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .8px;
+      color: var(--dim); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .sidebar-toggle-btn {
+      background: none; border: 1px solid var(--border);
+      color: var(--dim); border-radius: 4px; padding: 2px 7px;
+      font-size: 10px; cursor: pointer; text-transform: none;
+      letter-spacing: 0; font-weight: 500; transition: border-color .12s, color .12s;
+    }
+    .sidebar-toggle-btn:hover { border-color: var(--muted); color: var(--muted); }
+    .sidebar-toggle-btn.active { border-color: #7c3aed; color: #a78bfa; background: rgba(124,58,237,.1); }
+    #pkg-filter-wrap {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 2px 8px; font-size: 11px;
+    }
+    #pkg-filter-wrap label { color: var(--dim); white-space: nowrap; }
+    #pkg-filter-input {
+      background: none; border: none; outline: none;
+      color: var(--text); font-size: 11px; font-family: 'SF Mono','Fira Code',monospace;
+      width: 240px;
+    }
+    #pkg-filter-input::placeholder { color: var(--dim); }
+    #ep-list.hide-stdlib .ep-item.stdlib { display: none; }
+    #ep-list.hide-stdlib .group-label.stdlib-only { display: none; }
+    #ep-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .group-label {
+      padding: 8px 8px 3px; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .6px; color: var(--dim);
+    }
+    .ep-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 7px 9px; border-radius: 6px; cursor: pointer;
+      margin-bottom: 1px; border: 1px solid transparent;
+      transition: background .1s;
+    }
+    .ep-item:hover { background: var(--surface2); }
+    .ep-item.active { background: #0d2044; border-color: #1d4ed8; }
+    .ep-icon { font-size: 13px; margin-top: 2px; flex-shrink: 0; }
+    .ep-info { min-width: 0; }
+    .ep-method { font-size: 10px; font-weight: 700; color: #60a5fa; }
+    .ep-path { font-size: 12px; font-family: 'SF Mono','Fira Code',monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ep-fn { font-size: 10px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ep-item.stdlib .ep-path { color: var(--dim); }
+
+    /* ── TREE AREA ── */
+    #tree-area {
+      flex: 1; position: relative; overflow: hidden;
+      background: var(--bg);
+      background-image: radial-gradient(circle at 1px 1px, #1e293b 1px, transparent 0);
+      background-size: 28px 28px;
+    }
+    #tree-svg { width: 100%; height: 100%; }
+    .link          { fill: none; stroke: #21262d; stroke-width: 2; }
+    .link-channel  { stroke: #7c3aed; stroke-width: 1.5; stroke-dasharray: 7,3; opacity: .75; }
+    .link-deferred { stroke: #d97706; stroke-width: 1.5; stroke-dasharray: 3,3; opacity: .7; }
+    .node-g { cursor: pointer; }
+    .node-g.selected .node-bg { stroke: #f0f6fc !important; stroke-width: 2px !important; }
+    .node-g:hover .node-bg { filter: brightness(1.15); }
+
+    /* ── DETAIL PANEL ── */
+    #detail-panel {
+      width: 350px; background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden; flex-shrink: 0;
+      transition: width .15s;
+    }
+    #detail-panel.closed { width: 0; border-left: none; }
+    #detail-header {
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    #detail-header h3 { font-size: 13px; font-weight: 600; }
+    #detail-close {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 20px; line-height: 1; padding: 0 4px;
+    }
+    #detail-close:hover { color: var(--text); }
+    #detail-body { flex: 1; overflow-y: auto; padding: 14px; }
+    .ds { margin-bottom: 14px; }
+    .ds h4 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: var(--dim); margin-bottom: 6px; }
+    .badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+    .b-cat { color: #fff; }
+    .b-db    { background: rgba(4,120,87,.2); color: #34d399; border: 1px solid rgba(4,120,87,.35); }
+    .b-http  { background: rgba(180,83,9,.2); color: #fbbf24; border: 1px solid rgba(180,83,9,.35); }
+    .b-kafka { background: rgba(185,28,28,.2); color: #f87171; border: 1px solid rgba(185,28,28,.35); }
+    .b-tx    { background: rgba(124,58,237,.2); color: #c4b5fd; border: 1px solid rgba(124,58,237,.35); }
+    .b-redis { background: rgba(239,68,68,.2); color: #fca5a5; border: 1px solid rgba(239,68,68,.35); }
+    .b-sync  { background: rgba(14,165,233,.2); color: #7dd3fc; border: 1px solid rgba(14,165,233,.35); }
+    .b-chan  { background: rgba(124,58,237,.2); color: #a78bfa; border: 1px solid rgba(124,58,237,.35); }
+    .b-ok    { background: rgba(4,120,87,.2); color: #34d399; border: 1px solid rgba(4,120,87,.35); }
+    .b-warn  { background: rgba(185,28,28,.2); color: #f87171; border: 1px solid rgba(185,28,28,.35); }
+    .meta-row { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+    .file-ref {
+      font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
+      color: var(--muted); background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+      word-break: break-all;
+    }
+    .detail-item {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 7px 10px; margin-bottom: 4px; font-size: 12px;
+    }
+    .detail-item .method { font-weight: 600; color: #34d399; }
+    .detail-item .query  { font-family: monospace; font-size: 10px; color: var(--muted); margin-top: 3px; word-break: break-all; }
+    .source-pre {
+      font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 11px;
+      line-height: 1.65; background: #010409; border: 1px solid var(--border);
+      border-radius: 6px; padding: 12px; overflow: auto; color: #79c0ff;
+      white-space: pre; max-height: 480px;
+    }
+
+    /* ── CONFLICTS BAR ── */
+    #cbar { background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; }
+    #ctoggle {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px; cursor: pointer; user-select: none;
+      font-size: 12px; font-weight: 600; color: #f87171;
+    }
+    #ctoggle:hover { background: rgba(239,68,68,.05); }
+    #ccontent { padding: 0 16px 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+    #ccontent.closed { display: none; }
+    .ccard {
+      background: rgba(239,68,68,.07); border: 1px solid rgba(239,68,68,.25);
+      border-radius: 6px; padding: 9px 12px; font-size: 12px; min-width: 180px;
+    }
+    .ccard-res { font-family: monospace; font-weight: 700; color: #f87171; margin-bottom: 5px; }
+    .ccard-ep  { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+    .ccard-prot { margin-top: 7px; font-size: 11px; font-weight: 600; }
+    .prot-none { color: #f87171; }
+    .prot-ok   { color: #34d399; }
+
+    /* ── UPLOAD SCREEN ── */
+    #upload {
+      position: fixed; inset: 0; background: var(--bg);
+      display: flex; align-items: center; justify-content: center; z-index: 200;
+    }
+    #upload.gone { display: none; }
+    .ucard {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 40px; width: 540px;
+    }
+    .ucard .logo-big { font-size: 28px; font-weight: 800; color: #a78bfa; margin-bottom: 4px; }
+    .ucard .tagline  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+    .dropzone {
+      border: 2px dashed var(--border); border-radius: 8px;
+      padding: 28px; text-align: center; cursor: pointer; margin-bottom: 12px;
+      transition: border-color .15s, background .15s;
+    }
+    .dropzone:hover, .dropzone.over { border-color: #7c3aed; background: rgba(124,58,237,.05); }
+    .dropzone p    { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+    .dropzone span { color: var(--dim); font-size: 11px; }
+    #paste {
+      width: 100%; height: 100px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px; color: var(--text); font-family: monospace;
+      font-size: 11px; resize: none; outline: none; margin-bottom: 12px;
+    }
+    #paste:focus { border-color: #7c3aed; }
+    #go-btn {
+      width: 100%; background: #7c3aed; color: #fff;
+      border: none; border-radius: 6px; padding: 10px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    #go-btn:hover { background: #6d28d9; }
+    #uerr { color: #f87171; font-size: 12px; margin-top: 8px; min-height: 18px; }
+
+    /* ── EMPTY STATE ── */
+    #empty {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--dim); pointer-events: none;
+    }
+    #empty .ei { font-size: 44px; margin-bottom: 12px; opacity: .4; }
+    #empty p   { font-size: 13px; }
+
+    /* ── LEGEND ── */
+    #legend {
+      position: absolute; bottom: 16px; left: 16px;
+      background: rgba(22,27,34,.9); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px;
+      display: flex; gap: 12px; flex-wrap: wrap; pointer-events: none;
+    }
+    .leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+    .leg-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ══ UPLOAD SCREEN ══ -->
+<div id="upload">
+  <div class="ucard">
+    <div class="logo-big">👁 Sauron Eye</div>
+    <div class="tagline">Call Graph Visualizer — drop a <code>callgraph.json</code> or paste below</div>
+    <div class="dropzone" id="dropzone">
+      <p>Drop JSON file here</p>
+      <span>or click to browse</span>
+      <input type="file" id="file-in" accept=".json,.txt" style="display:none">
+    </div>
+    <textarea id="paste" placeholder="Paste sauron-eye JSON output…"></textarea>
+    <button id="go-btn">Analyze →</button>
+    <div id="uerr"></div>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="topbar" style="display:none">
+  <div class="logo">👁 Sauron Eye <span id="svc-name"></span></div>
+  <div class="chip">entries <b id="st-ep">0</b></div>
+  <div class="chip">db_calls <b id="st-db">0</b></div>
+  <div class="chip" id="st-conf-chip">conflicts <b id="st-conf">0</b></div>
+  <div id="topbar-spacer"></div>
+  <div id="pkg-filter-wrap" title="Only show nodes whose package path starts with this prefix">
+    <label>pkg</label>
+    <input id="pkg-filter-input" type="text" placeholder="e.g. mymodule/internal" spellcheck="false">
+  </div>
+  <button class="btn-sm" id="btn-load">↩ Load another</button>
+</div>
+
+<div id="layout" style="display:none">
+  <div id="sidebar">
+    <div id="sidebar-title">Entry Points
+      <div style="display:flex;gap:4px">
+        <button class="sidebar-toggle-btn" id="btn-hide-stdlib">hide stdlib</button>
+        <button class="sidebar-toggle-btn" id="btn-hide-generated">hide gen</button>
+      </div>
+    </div>
+    <div id="ep-list"></div>
+  </div>
+
+  <div id="tree-area">
+    <div id="empty">
+      <div class="ei">🌳</div>
+      <p>Select an entry point from the sidebar</p>
+    </div>
+    <svg id="tree-svg">
+      <g id="tc"></g>
+    </svg>
+    <div id="legend">
+      <div class="leg"><div class="leg-dot" style="background:#7c3aed"></div>handler</div>
+      <div class="leg"><div class="leg-dot" style="background:#1d4ed8"></div>service</div>
+      <div class="leg"><div class="leg-dot" style="background:#047857"></div>repository</div>
+      <div class="leg"><div class="leg-dot" style="background:#b45309"></div>http_client</div>
+      <div class="leg"><div class="leg-dot" style="background:#b91c1c"></div>producer</div>
+      <div class="leg"><div class="leg-dot" style="background:#374151"></div>unknown</div>
+      <div class="leg">
+        <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,2"/></svg>
+        channel
+      </div>
+      <div class="leg">
+        <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="#d97706" stroke-width="1.5" stroke-dasharray="3,3"/></svg>
+        defer
+      </div>
+      <div class="leg">
+        <svg width="18" height="8"><rect x="0" y="0" width="18" height="8" rx="2" fill="none" stroke="#14b8a6" stroke-width="1" stroke-dasharray="4,2"/></svg>
+        generated
+      </div>
+    </div>
+  </div>
+
+  <div id="detail-panel" class="closed">
+    <div id="detail-header">
+      <h3 id="d-title">Details</h3>
+      <button id="detail-close">×</button>
+    </div>
+    <div id="detail-body"></div>
+  </div>
+</div>
+
+<div id="cbar" style="display:none">
+  <div id="ctoggle">
+    <span>⚠</span><span id="clabel"></span><span id="cchev">▲</span>
+  </div>
+  <div id="ccontent"></div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════
+//  CONSTANTS & HELPERS
+// ════════════════════════════════════════════════════════
+const NW = 216, NH = 78, NRX = 7;     // node width, height, corner radius
+const HGAP = 56, VGAP = 14;           // gaps between nodes
+
+const CAT_COLOR = {
+  handler:     '#7c3aed',
+  service:     '#1d4ed8',
+  repository:  '#047857',
+  http_client: '#b45309',
+  producer:    '#b91c1c',
+  unknown:     '#374151',
+};
+
+function shortName(fn) {
+  if (!fn) return '?';
+  let s = fn.split('.').pop() || fn;
+  s = s.replace(/\$bound$/, '').replace(/\$\d+$/, '');
+  const m = s.match(/\)\.(.+)$/);
+  return m ? m[1] : s;
+}
+
+function shortFile(f, l) {
+  if (!f) return '';
+  const n = f.split('/').pop();
+  return l ? `${n}:${l}` : n;
+}
+
+function countMeta(n) {
+  if (!n) return {};
+  const chOps = n.channel_ops || [];
+  return {
+    db:       (n.db_calls    || []).length,
+    http:     (n.http_calls  || []).length,
+    kafka:    (n.kafka_ops   || []).length,
+    tx:       (n.tx_ops      || []).length,
+    redis:    (n.redis_ops   || []).length,
+    sync:     (n.sync_ops    || []).length,
+    chanSend: chOps.filter(o => o.direction === 'send').length,
+    chanRecv: chOps.filter(o => o.direction === 'receive').length,
+  };
+}
+
+function totalDbCalls(root) {
+  let n = 0;
+  function walk(node) {
+    if (!node) return;
+    n += (node.db_calls || []).length;
+    (node.children || []).forEach(e => walk(e.callee));
+  }
+  walk(root);
+  return n;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function isStdlib(ep) {
+  const fn = ep.function_name || '';
+  const f  = ep.file || '';
+  return fn.startsWith('expvar') || fn.startsWith('golang.org') ||
+         fn.startsWith('net/http/pprof') ||
+         f.includes('/go/pkg/mod/') || f.includes('/usr/local/go/');
+}
+
+// ════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════
+let DATA = null;
+let conflictsOpen = true;
+let zoomBehavior = null;
+let pkgFilter = '';   // package path prefix; empty = show all
+
+// ════════════════════════════════════════════════════════
+//  UPLOAD
+// ════════════════════════════════════════════════════════
+function tryLoad(text) {
+  const idx = text.indexOf('{');
+  if (idx === -1) { showErr('No JSON found in input'); return; }
+  try {
+    const data = JSON.parse(text.slice(idx));
+    if (!data.graphs) throw new Error('Missing "graphs" key — is this a sauron-eye output?');
+    DATA = data;
+    document.getElementById('uerr').textContent = '';
+    initApp();
+  } catch(e) { showErr(e.message); }
+}
+function showErr(msg) { document.getElementById('uerr').textContent = '⚠ ' + msg; }
+
+const dz = document.getElementById('dropzone');
+dz.addEventListener('click', () => document.getElementById('file-in').click());
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('over');
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  const r = new FileReader(); r.onload = ev => tryLoad(ev.target.result); r.readAsText(f);
+});
+document.getElementById('file-in').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader(); r.onload = ev => tryLoad(ev.target.result); r.readAsText(f);
+});
+document.getElementById('go-btn').addEventListener('click', () => {
+  const t = document.getElementById('paste').value.trim();
+  if (!t) { showErr('Paste JSON or upload a file'); return; }
+  tryLoad(t);
+});
+document.getElementById('btn-hide-stdlib').addEventListener('click', function() {
+  this.classList.toggle('active');
+  document.getElementById('ep-list').classList.toggle('hide-stdlib');
+});
+
+let hideGenerated = false;
+document.getElementById('btn-hide-generated').addEventListener('click', function() {
+  hideGenerated = !hideGenerated;
+  this.classList.toggle('active', hideGenerated);
+  if (_activeGraphIdx !== null) renderTree(DATA.graphs[_activeGraphIdx]);
+});
+
+document.getElementById('btn-load').addEventListener('click', () => {
+  document.getElementById('upload').classList.remove('gone');
+  clearTree();
+});
+
+// ════════════════════════════════════════════════════════
+//  INIT APP
+// ════════════════════════════════════════════════════════
+function initApp() {
+  document.getElementById('upload').classList.add('gone');
+  document.getElementById('topbar').style.display = 'flex';
+  document.getElementById('layout').style.display = 'flex';
+
+  const graphs = DATA.graphs || [];
+  const conflicts = DATA.conflicts || [];
+
+  // Stats
+  let totalDb = 0;
+  graphs.forEach(g => { totalDb += totalDbCalls(g.root); });
+  document.getElementById('st-ep').textContent   = graphs.length;
+  document.getElementById('st-db').textContent   = totalDb;
+  document.getElementById('st-conf').textContent = conflicts.length;
+  if (conflicts.length > 0) document.getElementById('st-conf-chip').classList.add('err');
+
+  // Service name
+  for (const g of graphs) {
+    const fn = g.entry_point?.function_name || '';
+    if (!isStdlib(g.entry_point) && fn.includes('/')) {
+      const parts = fn.split('/');
+      if (parts.length >= 2) { document.getElementById('svc-name').textContent = '/ ' + parts[1]; break; }
+    }
+  }
+
+  // Pre-fill pkg filter from module name embedded in JSON
+  if (DATA.module) {
+    pkgFilter = DATA.module;
+    document.getElementById('pkg-filter-input').value = DATA.module;
+  }
+
+  buildSidebar(graphs);
+  buildConflicts(conflicts);
+}
+
+// Re-render current tree when filter changes
+let _activeGraphIdx = null;
+document.getElementById('pkg-filter-input').addEventListener('input', function() {
+  pkgFilter = this.value.trim();
+  if (_activeGraphIdx !== null) renderTree(DATA.graphs[_activeGraphIdx]);
+});
+
+// ════════════════════════════════════════════════════════
+//  SIDEBAR
+// ════════════════════════════════════════════════════════
+function buildSidebar(graphs) {
+  const list = document.getElementById('ep-list');
+  list.innerHTML = '';
+
+  const groups = { http: [], kafka: [], grpc: [], cron: [], other: [] };
+  graphs.forEach((g, i) => {
+    const src = g.entry_point?.source || 'other';
+    (groups[src] || groups.other).push({ g, i });
+  });
+
+  const labels = { http: 'HTTP', kafka: 'Kafka', grpc: 'gRPC', cron: 'Cron', other: 'Other' };
+  const icons  = { http: '🌐', kafka: '📨', grpc: '⚙', cron: '🕐', other: '◦' };
+
+  for (const [src, items] of Object.entries(groups)) {
+    if (!items.length) continue;
+    const allStdlib = items.every(({ g }) => isStdlib(g.entry_point));
+    const lbl = document.createElement('div');
+    lbl.className = 'group-label' + (allStdlib ? ' stdlib-only' : '');
+    lbl.textContent = `${labels[src]} (${items.length})`;
+    list.appendChild(lbl);
+    items.forEach(({ g, i }) => list.appendChild(makeEpItem(g, i, icons[src])));
+  }
+}
+
+function makeEpItem(g, idx, icon) {
+  const ep   = g.entry_point;
+  const stdlib = isStdlib(ep);
+  const el   = document.createElement('div');
+  el.className = 'ep-item' + (stdlib ? ' stdlib' : '');
+  el.dataset.idx = idx;
+
+  const path   = ep.path || ep.topic || shortName(ep.function_name);
+  const method = (ep.method && ep.method !== 'ANY') ? ep.method : (ep.source || '').toUpperCase();
+  const fn     = shortName(ep.function_name);
+
+  el.innerHTML = `
+    <div class="ep-icon">${icon}</div>
+    <div class="ep-info">
+      <div class="ep-method">${escHtml(method)}</div>
+      <div class="ep-path" title="${escHtml(path)}">${escHtml(path || fn)}</div>
+      <div class="ep-fn">${escHtml(fn)}</div>
+    </div>`;
+
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.ep-item').forEach(e => e.classList.remove('active'));
+    el.classList.add('active');
+    _activeGraphIdx = idx;
+    renderTree(DATA.graphs[idx]);
+  });
+  return el;
+}
+
+// ════════════════════════════════════════════════════════
+//  TREE — D3
+// ════════════════════════════════════════════════════════
+
+// Convert CallNode → plain object for d3.hierarchy.
+// _via / _deferred are set on each child from the incoming edge attributes.
+function toH(callNode, via, deferred) {
+  if (!callNode) return null;
+  const kids = [];
+  for (const edge of (callNode.children || [])) {
+    if (!edge.callee) continue;
+    const childVia      = edge.via      || '';
+    const childDeferred = !!edge.deferred;
+    // Package filter: skip nodes whose package doesn't match the prefix (if filter is set)
+    const childPkg = edge.callee.package || '';
+    if (pkgFilter && childPkg && !childPkg.startsWith(pkgFilter)) continue;
+    // Generated filter: when toggle is active, collapse generated nodes into
+    // a stub leaf (still visible as a boundary, but subtree not expanded).
+    if (hideGenerated && edge.callee.generated) {
+      kids.push({ _trunc: true, _gen: true, _n: edge.callee, _via: childVia, _deferred: childDeferred });
+      continue;
+    }
+    if (edge.callee.truncated) {
+      kids.push({ _trunc: true, _n: edge.callee, _via: childVia, _deferred: childDeferred });
+    } else {
+      const c = toH(edge.callee, childVia, childDeferred);
+      if (c) kids.push(c);
+    }
+  }
+  return { _n: callNode, _kids: kids, _via: via || '', _deferred: !!deferred };
+}
+
+// Conflict function names for highlight
+function conflictFnSet() {
+  const s = new Set();
+  (DATA.conflicts || []).forEach(c => c.entry_points.forEach(ep => s.add(ep.function_name)));
+  return s;
+}
+
+function clearTree() {
+  document.getElementById('tc').innerHTML = '';
+  document.getElementById('empty').style.display = 'flex';
+  document.getElementById('empty').innerHTML = '<div class="ei">🌳</div><p>Select an entry point from the sidebar</p>';
+  closeDetail();
+}
+
+function renderTree(graph) {
+  document.getElementById('empty').style.display = 'none';
+  const tc = document.getElementById('tc');
+  tc.innerHTML = '';
+
+  if (!graph.root) {
+    document.getElementById('empty').style.display = 'flex';
+    document.getElementById('empty').innerHTML = '<div class="ei">⚠</div><p>No call tree for this entry point</p>';
+    return;
+  }
+
+  const hierRaw = toH(graph.root);
+  const root = d3.hierarchy(hierRaw, d => d._kids?.length ? d._kids : null);
+
+  const layout = d3.tree().nodeSize([NH + VGAP, NW + HGAP]);
+  layout(root);
+
+  // Rotate: swap x/y for left→right layout
+  root.each(d => { const t = d.x; d.x = d.y; d.y = t; });
+
+  const svg = d3.select('#tree-svg');
+  const g   = d3.select('#tc');
+
+  // Zoom
+  if (!zoomBehavior) {
+    zoomBehavior = d3.zoom().scaleExtent([0.05, 4])
+      .on('zoom', ev => g.attr('transform', ev.transform));
+    svg.call(zoomBehavior);
+  }
+
+  const conflictFns = conflictFnSet();
+
+  // Links — channel edges: dashed purple; deferred edges: dashed amber
+  g.selectAll('.link').data(root.links()).join('path')
+    .attr('class', lnk => {
+      if (lnk.target.data._via === 'channel') return 'link link-channel';
+      if (lnk.target.data._deferred)          return 'link link-deferred';
+      return 'link';
+    })
+    .attr('d', lnk => {
+      const sx = lnk.source.x + NW, sy = lnk.source.y + NH / 2;
+      const tx = lnk.target.x,      ty = lnk.target.y + NH / 2;
+      const mx = (sx + tx) / 2;
+      return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
+    });
+
+  // Nodes
+  const node = g.selectAll('.node-g').data(root.descendants()).join('g')
+    .attr('class', 'node-g')
+    .attr('transform', d => `translate(${d.x},${d.y})`)
+    .on('click', (ev, d) => {
+      ev.stopPropagation();
+      d3.selectAll('.node-g').classed('selected', false);
+      d3.select(ev.currentTarget).classed('selected', true);
+      if (!d.data._trunc && d.data._n) showDetail(d.data._n);
+    });
+
+  // Background rect
+  node.append('rect')
+    .attr('class', 'node-bg')
+    .attr('width', NW).attr('height', NH).attr('rx', NRX)
+    .attr('fill', d => {
+      if (d.data._trunc) return d.data._gen ? 'rgba(20,184,166,.08)' : '#1a2030';
+      const cat = d.data._n?.category || 'unknown';
+      return (CAT_COLOR[cat] || CAT_COLOR.unknown) + '28';
+    })
+    .attr('stroke', d => {
+      if (d.data._gen)  return '#14b8a6';
+      if (d.data._trunc) return '#21262d';
+      const fn = d.data._n?.function_name;
+      if (fn && conflictFns.has(fn)) return '#ef4444';
+      if (d.data._n?.generated) return '#14b8a6';
+      const cat = d.data._n?.category || 'unknown';
+      return (CAT_COLOR[cat] || CAT_COLOR.unknown) + '80';
+    })
+    .attr('stroke-width', d => {
+      if (d.data._n?.function_name && conflictFns.has(d.data._n.function_name)) return 1.5;
+      return 1;
+    })
+    .attr('stroke-dasharray', d => (d.data._gen || d.data._n?.generated) ? '5,3' : null);
+
+  // Category accent bar (left edge)
+  node.filter(d => !d.data._trunc && d.data._n)
+    .append('rect')
+    .attr('width', 3).attr('height', NH).attr('rx', 1.5)
+    .attr('fill', d => CAT_COLOR[d.data._n.category || 'unknown'] || CAT_COLOR.unknown);
+
+  // "defer" tag — top-right corner of nodes reached via defer
+  node.filter(d => !d.data._trunc && d.data._deferred)
+    .append('rect')
+    .attr('x', NW - 40).attr('y', 4).attr('width', 36).attr('height', 14).attr('rx', 3)
+    .attr('fill', 'rgba(217,119,6,.25)').attr('stroke', '#d97706').attr('stroke-width', 0.5);
+  node.filter(d => !d.data._trunc && d.data._deferred)
+    .append('text')
+    .attr('x', NW - 22).attr('y', 14).attr('text-anchor', 'middle')
+    .attr('fill', '#fbbf24').attr('font-size', 9).attr('font-weight', 600)
+    .attr('font-family', '-apple-system,sans-serif')
+    .text('defer');
+
+  // Function name
+  node.filter(d => !d.data._trunc && d.data._n)
+    .append('text')
+    .attr('x', 12).attr('y', 22)
+    .attr('fill', '#e6edf3').attr('font-size', 12).attr('font-weight', 600)
+    .attr('font-family', '-apple-system, BlinkMacSystemFont, sans-serif')
+    .text(d => { const s = shortName(d.data._n.function_name); return s.length > 23 ? s.slice(0,21)+'…' : s; });
+
+  // File:line
+  node.filter(d => !d.data._trunc && d.data._n)
+    .append('text')
+    .attr('x', 12).attr('y', 36)
+    .attr('fill', '#484f58').attr('font-size', 10).attr('font-family', 'monospace')
+    .text(d => shortFile(d.data._n.file, d.data._n.line));
+
+  // Meta badges (inline SVG micro-badges)
+  node.filter(d => !d.data._trunc && d.data._n)
+    .each(function(d) {
+      const meta = countMeta(d.data._n);
+      const el   = d3.select(this);
+      let bx = 10, by = 60;
+
+      function addBadge(label, fg, bg) {
+        const w = label.length * 6.5 + 10;
+        el.append('rect').attr('x',bx).attr('y',by-11).attr('width',w).attr('height',14)
+          .attr('rx',3).attr('fill',bg).attr('stroke',fg).attr('stroke-width',0.5).attr('opacity',.8);
+        el.append('text').attr('x',bx+5).attr('y',by).attr('fill',fg)
+          .attr('font-size',9).attr('font-weight',600)
+          .attr('font-family','-apple-system,sans-serif').text(label);
+        bx += w + 5;
+      }
+
+      if (d.data._n.generated)  addBadge('gen',              '#5eead4', 'rgba(20,184,166,.18)');
+      if (meta.db       > 0) addBadge(`⬡ ${meta.db} db`,  '#34d399', 'rgba(4,120,87,.25)');
+      if (meta.http     > 0) addBadge(`↗ http`,            '#fbbf24', 'rgba(180,83,9,.25)');
+      if (meta.kafka    > 0) addBadge(`⟳ kafka`,           '#f87171', 'rgba(185,28,28,.25)');
+      if (meta.tx       > 0) addBadge(`tx`,                '#c4b5fd', 'rgba(124,58,237,.25)');
+      if (meta.chanSend > 0) addBadge(`→ chan`,             '#a78bfa', 'rgba(124,58,237,.25)');
+      if (meta.chanRecv > 0) addBadge(`← chan`,             '#a78bfa', 'rgba(124,58,237,.25)');
+    });
+
+  // Truncated node — distinguish: gen stub vs cycle vs depth cutoff
+  // Background tint for gen stubs
+  node.filter(d => !!d.data._trunc)
+    .attr('opacity', d => d.data._gen ? 0.75 : 1);
+
+  node.filter(d => !!d.data._trunc)
+    .append('text')
+    .attr('x', NW/2).attr('y', NH/2 - 4)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 11)
+    .attr('fill', d => {
+      if (d.data._gen) return '#5eead4';
+      return d.data._n?.trunc_reason === 'cycle' ? '#f87171' : '#484f58';
+    })
+    .text(d => {
+      const fn = d.data._n?.function_name;
+      return fn ? shortName(fn) : '…';
+    });
+  node.filter(d => !!d.data._trunc)
+    .append('text')
+    .attr('x', NW/2).attr('y', NH/2 + 10)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 10)
+    .attr('fill', d => {
+      if (d.data._gen) return '#0d9488';
+      return d.data._n?.trunc_reason === 'cycle' ? '#7f1d1d' : '#374151';
+    })
+    .text(d => {
+      if (d.data._gen) return '⬡ generated';
+      const reason = d.data._n?.trunc_reason;
+      if (reason === 'cycle') return '↻ cycle';
+      if (reason === 'depth') return '… max depth';
+      return d.data._n?.function_name ? '↻ cycle' : '… max depth';
+    });
+
+  // Click on canvas background → deselect
+  svg.on('click', () => {
+    d3.selectAll('.node-g').classed('selected', false);
+    closeDetail();
+  });
+
+  // Auto-fit
+  requestAnimationFrame(() => {
+    const box  = document.getElementById('tc').getBBox();
+    const svgEl = document.getElementById('tree-svg');
+    const W = svgEl.clientWidth, H = svgEl.clientHeight;
+    const pad = 60;
+    const scale = Math.min((W - pad*2) / Math.max(box.width,1), (H - pad*2) / Math.max(box.height,1), 1);
+    const tx = (W - box.width*scale) / 2 - box.x*scale;
+    const ty = (H - box.height*scale) / 2 - box.y*scale;
+    d3.select('#tree-svg').call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  });
+}
+
+// ════════════════════════════════════════════════════════
+//  DETAIL PANEL
+// ════════════════════════════════════════════════════════
+function showDetail(n) {
+  document.getElementById('detail-panel').classList.remove('closed');
+  const cat   = n.category || 'unknown';
+  const color = CAT_COLOR[cat] || CAT_COLOR.unknown;
+  const meta  = countMeta(n);
+
+  let h = '';
+
+  // Category + location
+  h += `<div class="ds">
+    <div class="meta-row">
+      <span class="badge b-cat" style="background:${color}33;color:${color};border:1px solid ${color}55">${cat}</span>
+    </div>
+    <div class="file-ref">${escHtml(n.file || '')}${n.line ? ':'+n.line : ''}</div>
+  </div>`;
+
+  // Meta badges
+  const bs = [];
+  if (meta.db    > 0) bs.push(`<span class="badge b-db">⬡ ${meta.db} db call${meta.db>1?'s':''}</span>`);
+  if (meta.http  > 0) bs.push(`<span class="badge b-http">↗ ${meta.http} http</span>`);
+  if (meta.kafka > 0) bs.push(`<span class="badge b-kafka">⟳ ${meta.kafka} kafka</span>`);
+  if (meta.tx    > 0) bs.push(`<span class="badge b-tx">⊕ ${meta.tx} tx op${meta.tx>1?'s':''}</span>`);
+  if (meta.redis    > 0) bs.push(`<span class="badge b-redis">◈ ${meta.redis} redis</span>`);
+  if (meta.sync     > 0) bs.push(`<span class="badge b-sync">⊗ ${meta.sync} sync</span>`);
+  if (meta.chanSend > 0) bs.push(`<span class="badge b-chan">→ ${meta.chanSend} chan send${meta.chanSend>1?'s':''}</span>`);
+  if (meta.chanRecv > 0) bs.push(`<span class="badge b-chan">← ${meta.chanRecv} chan recv</span>`);
+  if (bs.length) h += `<div class="ds"><div class="meta-row">${bs.join('')}</div></div>`;
+
+  // DB calls
+  if ((n.db_calls || []).length > 0) {
+    h += `<div class="ds"><h4>DB Calls</h4>`;
+    n.db_calls.forEach(c => {
+      h += `<div class="detail-item">
+        <span class="method">${escHtml(c.method)}</span>
+        <span style="color:var(--dim);font-size:10px"> ${escHtml((c.package||'').split('/').pop())} :${c.line}</span>
+        ${c.query ? `<div class="query">${escHtml(c.query)}</div>` : ''}
+      </div>`;
+    });
+    h += `</div>`;
+  }
+
+  // TX ops
+  if ((n.tx_ops || []).length > 0) {
+    h += `<div class="ds"><h4>Transaction Ops</h4>`;
+    n.tx_ops.forEach(op => {
+      h += `<div class="detail-item">
+        <span class="badge b-tx">${escHtml(op.operation)}</span>
+        <span style="color:var(--dim);font-size:10px;margin-left:6px">:${op.line}</span>
+      </div>`;
+    });
+    h += `</div>`;
+  }
+
+  // HTTP calls
+  if ((n.http_calls || []).length > 0) {
+    h += `<div class="ds"><h4>HTTP Calls</h4>`;
+    n.http_calls.forEach(c => {
+      const tb = c.has_timeout
+        ? `<span class="badge b-ok">timeout ✓</span>`
+        : `<span class="badge b-warn">no timeout ⚠</span>`;
+      h += `<div class="detail-item"><span style="color:var(--dim);font-size:10px">:${c.line}</span> ${tb}</div>`;
+    });
+    h += `</div>`;
+  }
+
+  // Kafka ops
+  if ((n.kafka_ops || []).length > 0) {
+    h += `<div class="ds"><h4>Kafka Ops</h4>`;
+    n.kafka_ops.forEach(op => {
+      const inTx = op.inside_tx ? `<span class="badge b-warn" style="margin-left:4px">inside tx ⚠</span>` : '';
+      h += `<div class="detail-item">
+        <span class="badge b-kafka">${op.is_publish ? 'publish' : 'consume'}</span>
+        ${op.topic ? `<span style="font-size:10px;color:var(--muted);margin-left:5px">${escHtml(op.topic)}</span>` : ''}
+        ${inTx}
+        <span style="color:var(--dim);font-size:10px;margin-left:5px">:${op.line}</span>
+      </div>`;
+    });
+    h += `</div>`;
+  }
+
+  // Channel ops
+  if ((n.channel_ops || []).length > 0) {
+    h += `<div class="ds"><h4>Channel Ops</h4>`;
+    n.channel_ops.forEach(op => {
+      const arrow = op.direction === 'send' ? '→' : '←';
+      const type  = (op.chan_type || '').split('/').pop();
+      h += `<div class="detail-item">
+        <span class="badge b-chan">${arrow} ${escHtml(op.direction)}</span>
+        <span style="font-family:monospace;font-size:10px;color:var(--muted);margin-left:6px">${escHtml(type)}</span>
+        <span style="color:var(--dim);font-size:10px;margin-left:4px">:${op.line}</span>
+      </div>`;
+    });
+    h += `</div>`;
+  }
+
+  // Source code
+  if (n.source_code) {
+    h += `<div class="ds"><h4>Source Code</h4><pre class="source-pre">${escHtml(n.source_code)}</pre></div>`;
+  }
+
+  document.getElementById('d-title').textContent = shortName(n.function_name);
+  document.getElementById('detail-body').innerHTML = h;
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.add('closed');
+}
+document.getElementById('detail-close').addEventListener('click', closeDetail);
+
+// ════════════════════════════════════════════════════════
+//  CONFLICTS BAR
+// ════════════════════════════════════════════════════════
+function buildConflicts(conflicts) {
+  const bar = document.getElementById('cbar');
+  if (!conflicts.length) return;
+  bar.style.display = 'block';
+  document.getElementById('clabel').textContent =
+    `${conflicts.length} Concurrency Conflict${conflicts.length>1?'s':''} Detected`;
+
+  const cc = document.getElementById('ccontent');
+  cc.innerHTML = '';
+  conflicts.forEach(c => {
+    const prots = Object.entries(c.protection || {}).filter(([,v])=>v).map(([k])=>k.replace('has_','').replace(/_/g,' '));
+    const card = document.createElement('div');
+    card.className = 'ccard';
+    card.innerHTML = `
+      <div class="ccard-res">${escHtml(c.resource)}</div>
+      ${c.entry_points.map(ep=>`<div class="ccard-ep">${ep.source==='http'?'🌐':'📨'} <b>${ep.source.toUpperCase()}</b> ${escHtml(ep.path || shortName(ep.function_name))}</div>`).join('')}
+      <div class="ccard-prot ${prots.length?'prot-ok':'prot-none'}">
+        ${prots.length ? '✓ '+prots.join(', ') : '✗ No protection detected'}
+      </div>`;
+    cc.appendChild(card);
+  });
+}
+
+document.getElementById('ctoggle').addEventListener('click', () => {
+  conflictsOpen = !conflictsOpen;
+  document.getElementById('ccontent').classList.toggle('closed', !conflictsOpen);
+  document.getElementById('cchev').textContent = conflictsOpen ? '▲' : '▼';
+});
+</script>
+</body>
+</html>
