@@ -69,6 +69,10 @@ var httpRoutePatterns = map[string]frameworkMeta{
 func FindHTTPHandlers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileSet, moduleName string) []DetectedEntry {
 	var entries []DetectedEntry
 
+	// Build an inter-procedural index so we can resolve prefixes when a
+	// subrouter is passed as a function parameter rather than used inline.
+	subrouterIndex := buildGorillaSubrouterIndex(allFuncs)
+
 	for _, fn := range allFuncs {
 		// Only scan project code for route registrations.
 		if moduleName != "" {
@@ -123,9 +127,26 @@ func FindHTTPHandlers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.F
 					line = p.Line
 				}
 
+				method := meta.Method
+				if meta.Framework == "gorilla" {
+					// Resolve the subrouter prefix chain (PathPrefix + Subrouter),
+					// including the case where the router was passed as a parameter.
+					if len(args) > 0 {
+						if prefix := resolveGorillaPrefixFull(args[0], subrouterIndex); prefix != "" {
+							path = prefix + path
+						}
+					}
+					// Resolve the HTTP method from a chained .Methods() call.
+					if callVal, ok := callInstr.(ssa.Value); ok {
+						if m := extractGorillaMethod(callVal); m != "" {
+							method = m
+						}
+					}
+				}
+
 				entries = append(entries, DetectedEntry{
 					Source:  "http",
-					Method:  meta.Method,
+					Method:  method,
 					Path:    path,
 					Handler: handler,
 					File:    file,
@@ -136,4 +157,170 @@ func FindHTTPHandlers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.F
 	}
 
 	return entries
+}
+
+// resolveGorillaPrefix walks the SSA def-use chain of a gorilla/mux receiver
+// to collect any PathPrefix strings from enclosing subrouters.
+// This is the inline-only resolver: it works when the subrouter is used
+// directly in the same function. For the parameter-passing case see
+// resolveGorillaPrefixFull.
+//
+// gorilla/mux subrouter pattern in SSA:
+//
+//	t0 = (*mux.Router).PathPrefix(router, "/v2")   → *mux.Route
+//	t1 = (*mux.Route).Subrouter(t0)                → *mux.Router
+//	t2 = (*mux.Router).HandleFunc(t1, "/path", h)  ← receiver is t1
+//
+// Given t1 (the receiver of HandleFunc), we walk:
+//
+//	t1 defined by Subrouter(t0)
+//	t0 defined by PathPrefix(parent, "/v2")
+//	recurse on parent
+func resolveGorillaPrefix(receiver ssa.Value) string {
+	callVal, ok := receiver.(*ssa.Call)
+	if !ok {
+		return ""
+	}
+	callee := callVal.Call.StaticCallee()
+	if callee == nil {
+		return ""
+	}
+	if callee.RelString(nil) != "(*github.com/gorilla/mux.Route).Subrouter" {
+		return ""
+	}
+	// The receiver of Subrouter() is the *mux.Route returned by PathPrefix().
+	if len(callVal.Call.Args) == 0 {
+		return ""
+	}
+	routeVal := callVal.Call.Args[0]
+
+	routeCall, ok := routeVal.(*ssa.Call)
+	if !ok {
+		return ""
+	}
+	routeCallee := routeCall.Call.StaticCallee()
+	if routeCallee == nil {
+		return ""
+	}
+	if routeCallee.RelString(nil) != "(*github.com/gorilla/mux.Router).PathPrefix" {
+		return ""
+	}
+	// Args: [receiver_router, prefix_string]
+	if len(routeCall.Call.Args) < 2 {
+		return ""
+	}
+	prefix := extractStringConst(routeCall.Call.Args[1])
+	// Recurse: the Router passed to PathPrefix might itself be a subrouter.
+	parentPrefix := resolveGorillaPrefix(routeCall.Call.Args[0])
+	return parentPrefix + prefix
+}
+
+// resolveGorillaPrefixFull extends resolveGorillaPrefix to handle the case
+// where the subrouter is passed as a function parameter rather than used inline.
+//
+// Example:
+//
+//	func setup(r *mux.Router) {
+//	    v2 := r.PathPrefix("/v2").Subrouter()   // *ssa.Call — resolved inline
+//	    app.registerHandlers(v2)               // v2 passed as arg
+//	}
+//	func registerHandlers(v2 *mux.Router) {    // v2 is *ssa.Parameter here
+//	    v2.HandleFunc("/message", h)           // receiver is *ssa.Parameter
+//	}
+//
+// subrouterIndex is built by buildGorillaSubrouterIndex.
+func resolveGorillaPrefixFull(receiver ssa.Value, subrouterIndex map[*ssa.Function]map[int]string) string {
+	// Case 1: inline — the receiver is the direct result of a Subrouter() call.
+	if prefix := resolveGorillaPrefix(receiver); prefix != "" {
+		return prefix
+	}
+	// Case 2: parameter — the subrouter was passed in from a call site.
+	param, ok := receiver.(*ssa.Parameter)
+	if !ok {
+		return ""
+	}
+	fn := param.Parent()
+	for i, p := range fn.Params {
+		if p == param {
+			if prefixes, ok := subrouterIndex[fn]; ok {
+				return prefixes[i]
+			}
+			break
+		}
+	}
+	return ""
+}
+
+// buildGorillaSubrouterIndex performs a single pass over all functions and
+// records which function parameters carry a gorilla/mux subrouter with a
+// known prefix. This enables resolveGorillaPrefixFull to cross function
+// call boundaries.
+//
+// For every call site that passes a subrouter value (one whose inline prefix
+// resolves to a non-empty string) as an argument, we record:
+//
+//	index[callee][argIndex] = prefix
+func buildGorillaSubrouterIndex(allFuncs []*ssa.Function) map[*ssa.Function]map[int]string {
+	index := make(map[*ssa.Function]map[int]string)
+	for _, fn := range allFuncs {
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				callInstr, ok := instr.(ssa.CallInstruction)
+				if !ok {
+					continue
+				}
+				callee := callInstr.Common().StaticCallee()
+				if callee == nil {
+					continue
+				}
+				for i, arg := range callInstr.Common().Args {
+					prefix := resolveGorillaPrefix(arg)
+					if prefix == "" {
+						continue
+					}
+					if index[callee] == nil {
+						index[callee] = make(map[int]string)
+					}
+					index[callee][i] = prefix
+				}
+			}
+		}
+	}
+	return index
+}
+
+// extractGorillaMethod looks for a .Methods(...) call chained on the return
+// value of a HandleFunc/Handle call and returns the first HTTP method string.
+//
+// gorilla/mux pattern:
+//
+//	route := router.HandleFunc("/path", handler)
+//	route.Methods(http.MethodPost)
+//
+// In SSA the return value of HandleFunc is a *mux.Route; we walk its
+// referrers looking for a (*mux.Route).Methods call.
+func extractGorillaMethod(result ssa.Value) string {
+	refs := result.Referrers()
+	if refs == nil {
+		return ""
+	}
+	for _, ref := range *refs {
+		callInstr, ok := ref.(ssa.CallInstruction)
+		if !ok {
+			continue
+		}
+		call := callInstr.Common()
+		if calleeQualName(call) != "(*github.com/gorilla/mux.Route).Methods" {
+			continue
+		}
+		// Args: [receiver *Route, methods ...string]
+		// The variadic is compiled as a []string slice — reuse extractTopicFromArg.
+		if len(call.Args) < 2 {
+			continue
+		}
+		if m := extractTopicFromArg(call.Args[1]); m != "" {
+			return strings.ToUpper(m)
+		}
+	}
+	return ""
 }
