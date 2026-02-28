@@ -232,6 +232,28 @@ func (t *Traversal) BuildNode(fn *ssa.Function, depth int, visited visitedSet, h
 		}
 	}
 
+	// Anonymous function literals (closures) defined inside this function —
+	// e.g. passed to retry.Do, sort.Slice, go func(){}, etc.
+	// CHA/VTA edges from the outer function don't cover them when the closure
+	// is passed to an external callee, so we add them explicitly here.
+	// addedCallees prevents duplicates with CHA/VTA edges that do exist.
+	for _, anonFn := range fn.AnonFuncs {
+		if addedCallees[anonFn] || t.shouldSkip(anonFn) {
+			continue
+		}
+		addedCallees[anonFn] = true
+		anonLine := 0
+		if anonFn.Pos().IsValid() {
+			anonLine = t.fset.Position(anonFn.Pos()).Line
+		}
+		childNode := t.BuildNode(anonFn, depth+1, visited, childTxContext)
+		node.Children = append(node.Children, &CallEdge{
+			Callee: childNode,
+			Line:   anonLine,
+			Via:    "closure",
+		})
+	}
+
 	// Synthetic channel edges: for each channel send in this node, find all
 	// project functions that receive from a channel of the same element type
 	// and add them as children marked Via:"channel".
