@@ -28,6 +28,8 @@
       --link-color:    #21262d;
       --source-bg:     #010409;
       --source-text:   #c9d1d9;
+      --ep-active-bg:  #0d2044;
+      --overlay-bg:    rgba(22,27,34,.92);
     }
     [data-theme="light"] {
       --bg:       #f6f8fa;
@@ -42,8 +44,10 @@
       --node-text:     #24292f;
       --node-dim-text: #8c959f;
       --link-color:    #c8d0d8;
-      --source-bg:     #161b22;
-      --source-text:   #c9d1d9;
+      --source-bg:     #f6f8fa;
+      --source-text:   #24292f;
+      --ep-active-bg:  #dbeafe;
+      --overlay-bg:    rgba(255,255,255,.92);
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -149,7 +153,7 @@
       transition: background .1s;
     }
     .ep-item:hover { background: var(--surface2); }
-    .ep-item.active { background: #0d2044; border-color: #1d4ed8; }
+    .ep-item.active { background: var(--ep-active-bg); border-color: #1d4ed8; }
     .ep-item.hidden { display: none; }
     .ep-icon { font-size: 13px; margin-top: 2px; flex-shrink: 0; }
     .ep-info { min-width: 0; flex: 1; }
@@ -199,7 +203,7 @@
     #ep-breadcrumb {
       position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
       display: none; align-items: center; gap: 6px;
-      background: rgba(22,27,34,.95); border: 1px solid var(--border);
+      background: var(--overlay-bg); border: 1px solid var(--border);
       border-radius: 20px; padding: 5px 14px; font-size: 12px;
       pointer-events: none; z-index: 10; white-space: nowrap;
       backdrop-filter: blur(4px);
@@ -263,7 +267,7 @@
       border-radius: 6px; padding: 12px; overflow: auto; color: var(--source-text);
       white-space: pre; max-height: 600px;
     }
-    /* Go syntax highlight */
+    /* Go syntax highlight — dark theme (GitHub dark) */
     .go-kw      { color: #ff7b72; }
     .go-type    { color: #ffa657; }
     .go-fn      { color: #d2a8ff; }
@@ -272,6 +276,15 @@
     .go-string  { color: #a5d6ff; }
     .go-comment { color: #8b949e; font-style: italic; }
     .go-number  { color: #79c0ff; }
+    /* Go syntax highlight — light theme (GitHub light) */
+    [data-theme="light"] .go-kw      { color: #cf222e; }
+    [data-theme="light"] .go-type    { color: #953800; }
+    [data-theme="light"] .go-fn      { color: #8250df; }
+    [data-theme="light"] .go-builtin { color: #953800; }
+    [data-theme="light"] .go-const   { color: #0550ae; }
+    [data-theme="light"] .go-string  { color: #0a3069; }
+    [data-theme="light"] .go-comment { color: #6e7781; font-style: italic; }
+    [data-theme="light"] .go-number  { color: #0550ae; }
 
     /* ── RESIZE HANDLE ── */
     #resize-handle {
@@ -358,7 +371,7 @@
     /* ── LEGEND ── */
     #legend {
       position: absolute; bottom: 16px; left: 16px;
-      background: rgba(22,27,34,.9); border: 1px solid var(--border);
+      background: var(--overlay-bg); border: 1px solid var(--border);
       border-radius: 8px; padding: 10px 14px;
       display: flex; gap: 12px; flex-wrap: wrap; pointer-events: none;
     }
@@ -1257,7 +1270,9 @@ function showDetail(n, entryPoint) {
 }
 
 function closeDetail() {
-  document.getElementById('detail-panel').classList.add('closed');
+  const panel = document.getElementById('detail-panel');
+  panel.style.width = '';
+  panel.classList.add('closed');
   document.getElementById('resize-handle').style.display = 'none';
 }
 document.getElementById('detail-close').addEventListener('click', closeDetail);
