@@ -108,6 +108,9 @@ func (t *Traversal) BuildNode(fn *ssa.Function, depth int, visited visitedSet, h
 	// Package name.
 	if fn.Package() != nil {
 		node.Package = fn.Package().Pkg.Path()
+	} else if fn.Origin() != nil && fn.Origin().Package() != nil {
+		// Generic instantiation: Package()==nil, use the origin's package.
+		node.Package = fn.Origin().Package().Pkg.Path()
 	}
 
 	// Extract metadata from SSA instructions.
@@ -144,6 +147,16 @@ func (t *Traversal) BuildNode(fn *ssa.Function, depth int, visited visitedSet, h
 	if cgNode != nil {
 		for _, edge := range cgNode.Out {
 			callee := edge.Callee.Func
+			// Unwrap synthetic pointer-receiver wrappers (*T).M that SSA generates
+			// when T has a value-receiver method M.  These wrappers have Package()==nil
+			// so shouldSkip would prune them, but their single CG callee IS the real
+			// project function.  By unwrapping here we splice out the trivial shim and
+			// recurse directly into the real implementation.
+			// Generic instantiations also have Package()==nil and Synthetic!="" but
+			// must NOT be unwrapped — they are real calls to a project function.
+			if callee != nil && callee.Package() == nil && callee.Synthetic != "" && callee.Origin() == nil {
+				callee = t.unwrapSyntheticCallee(callee)
+			}
 			if callee == nil || t.shouldSkip(callee) {
 				continue
 			}
@@ -156,6 +169,16 @@ func (t *Traversal) BuildNode(fn *ssa.Function, depth int, visited visitedSet, h
 			// supplementary SSA scan below, so nothing is lost.
 			if node.Generated && edge.Site != nil && edge.Site.Common().StaticCallee() == nil {
 				continue
+			}
+
+			// Drop interface dispatch edges on common low-signal methods.
+			// CHA/VTA maps every call to err.Error() or err.Unwrap() to ALL types
+			// implementing that method in the program, producing false edges into
+			// error type definitions that are never actually called on this path.
+			if edge.Site != nil && edge.Site.Common().IsInvoke() {
+				if isNoisyInterfaceMethod(callee) {
+					continue
+				}
 			}
 
 			edgeLine := 0
@@ -233,18 +256,38 @@ func (t *Traversal) BuildNode(fn *ssa.Function, depth int, visited visitedSet, h
 }
 
 // shouldSkip returns true for functions we should not recurse into:
-// synthetic wrappers, stdlib, external module dependencies, and packages
-// outside the configured pkg filter.
+// synthetic wrappers from external deps, stdlib, and packages outside the
+// configured pkg filter.
 func (t *Traversal) shouldSkip(fn *ssa.Function) bool {
-	if fn == nil || fn.Package() == nil {
+	if fn == nil {
+		return true
+	}
+	// Generic instantiations have Package()==nil and Synthetic!="" (set to
+	// "instance of <origin>") but they ARE real project code — just specialized
+	// copies of a generic function. Route all skip checks through the origin so
+	// the package filter, external check, and test-package check work correctly.
+	if fn.Origin() != nil {
+		return t.shouldSkip(fn.Origin())
+	}
+	if fn.Package() == nil {
 		return true
 	}
 	// Synthetic functions (interface method wrappers, bound-method thunks) —
 	// skip to avoid explosion; they don't contain real logic.
+	// Note: pointer-to-value-receiver wrappers like (*T).M have Package()==nil
+	// so they are already handled by the check above and never reach here.
 	if fn.Synthetic != "" {
 		return true
 	}
 	if t.isExternal(fn) {
+		return true
+	}
+	// Skip test packages — they can never be reached from production code at
+	// runtime, but CHA over-approximates function-value calls (e.g. a
+	// func-typed struct field) and resolves them to every function with a
+	// matching signature, including test SetupTest closures that happen to
+	// assign a mock to that field.
+	if isTestPackage(fn.Package().Pkg.Path()) {
 		return true
 	}
 	// Skip generated files when configured.
@@ -264,6 +307,67 @@ func (t *Traversal) shouldSkip(fn *ssa.Function) bool {
 		return true
 	}
 	return false
+}
+
+// isTestPackage reports whether pkgPath refers to a test-only package.
+// These are packages that exist solely for testing and are never imported by
+// production code, so any CHA edge into them is a false positive caused by
+// function-value call over-approximation.
+func isTestPackage(pkgPath string) bool {
+	// External test packages declared as "package foo_test".
+	if strings.HasSuffix(pkgPath, "_test") {
+		return true
+	}
+	// Path components that indicate a dedicated test or mock directory.
+	// We match exact segments to avoid accidentally skipping packages like
+	// "contest" or "attest".
+	for _, seg := range strings.Split(pkgPath, "/") {
+		switch seg {
+		case "test", "tests", "e2e", "integration", "testutil", "testhelper", "testhelpers",
+			"mock", "mocks", "fake", "fakes", "stub", "stubs":
+			return true
+		}
+	}
+	return false
+}
+
+// isNoisyInterfaceMethod returns true for interface methods that produce
+// excessive false-positive edges under CHA/VTA. These methods are called
+// through the error/Stringer/etc. interfaces on every site that calls
+// err.Error(), so CHA maps the call to every implementation in scope.
+// Since the implementations are trivial and never contain business logic,
+// excluding them reduces noise without losing useful signal.
+func isNoisyInterfaceMethod(fn *ssa.Function) bool {
+	if fn.Signature.Params().Len() != 0 {
+		return false
+	}
+	switch fn.Name() {
+	case "Error":
+		// error interface: func() string
+		return fn.Signature.Results().Len() == 1
+	case "Unwrap":
+		// errors.Unwrap target: func() error or func() []error
+		return fn.Signature.Results().Len() == 1
+	}
+	return false
+}
+
+// unwrapSyntheticCallee resolves a synthetic wrapper function (e.g. the
+// pointer-to-value-receiver wrapper (*T).M that SSA generates when type T has a
+// value-receiver method M) to the first non-synthetic callee reachable via a
+// single call graph edge.  If no such callee is found, the original wrapper is
+// returned unchanged so the caller can decide what to do.
+func (t *Traversal) unwrapSyntheticCallee(fn *ssa.Function) *ssa.Function {
+	cgNode := t.cg.Nodes[fn]
+	if cgNode == nil {
+		return fn
+	}
+	for _, edge := range cgNode.Out {
+		if callee := edge.Callee.Func; callee != nil && callee.Synthetic == "" && callee.Package() != nil {
+			return callee
+		}
+	}
+	return fn
 }
 
 // isExternal returns true if fn's source file lives outside the project —
