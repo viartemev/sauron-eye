@@ -33,7 +33,7 @@ var kafkaProtoHandlerPrefixes = []string{
 }
 
 // FindKafkaConsumers scans for Kafka consumer registrations and ConsumeClaim implementations.
-func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileSet) []DetectedEntry {
+func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileSet, moduleName string) []DetectedEntry {
 	var entries []DetectedEntry
 
 	// 1. Find ConsumeClaim implementations (sarama consumer group handler interface)
@@ -95,12 +95,21 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 	}
 
 	// 3. Find explicit Consume / Poll / ReadMessage calls
+	detectedConsumers := map[*ssa.Function]bool{}
 	for _, fn := range allFuncs {
 		// Skip functions that belong to a type which itself implements the kafka Reader
 		// interface (has FetchMessage or ReadMessage). Such types are decorators/wrappers
 		// around the real reader (e.g. SafeReader, Dedup), not consumer entry points.
 		if isKafkaReaderImplementor(fn) {
 			continue
+		}
+
+		// Skip functions outside the project module to avoid false positives from
+		// external libraries (e.g. kafka-go internals, net/http2).
+		if moduleName != "" && fn.Package() != nil {
+			if !strings.HasPrefix(fn.Package().Pkg.Path(), moduleName) {
+				continue
+			}
 		}
 
 		for _, block := range fn.Blocks {
@@ -113,7 +122,13 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 				call := callInstr.Common()
 				qualName := calleeQualName(call)
 				if !kafkaConsumerPatterns[qualName] {
-					continue
+					// Also match calls whose method name is in the kafka pattern set but on a
+					// different receiver type — e.g. generated consumer wrappers that proxy to
+					// the real kafka.Reader internally ((*GeneratedConsumer).FetchMessage).
+					dot := strings.LastIndex(qualName, ".")
+					if dot < 0 || !kafkaPatternMethods[qualName[dot+1:]] {
+						continue
+					}
 				}
 
 				file := ""
@@ -150,6 +165,17 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 					File:    file,
 					Line:    line,
 				})
+
+				// For ReadMessage/FetchMessage consumers: also detect any message handler
+				// implementations that the consumer loop dispatches to via an interface.
+				// Handles the pattern where a project wraps kafka reading in a loop and
+				// delegates to an injected handler interface, e.g.:
+				//   processBatch → c.handler.HandleBatch(ctx, msgs)
+				// Both the consumer loop function and the concrete handler method are entry points.
+				if !detectedConsumers[fn] {
+					detectedConsumers[fn] = true
+					entries = append(entries, findHandlerImpls(fn, allFuncs, fset, moduleName)...)
+				}
 			}
 		}
 	}
@@ -309,4 +335,123 @@ func deduplicateKafka(entries []DetectedEntry) []DetectedEntry {
 		}
 	}
 	return result
+}
+
+// findHandlerImpls detects message handler implementations that a Kafka consumer
+// loop dispatches to via an interface. It scans fn and its direct static callees
+// (within the module) for interface dispatch calls where:
+//   - the method name starts with "Handle" or "Process"
+//   - the interface type name contains "handler", "consumer", or "processor"
+//
+// For each such dispatch it finds all concrete implementations of that interface
+// method declared within the module and returns them as additional Kafka entry points.
+//
+// Example: given processBatch → c.handler.HandleBatch(ctx, msgs) where
+// c.handler is kafkahandler.Handler, this will return (*handler).HandleBatch.
+func findHandlerImpls(fn *ssa.Function, allFuncs []*ssa.Function, fset *token.FileSet, moduleName string) []DetectedEntry {
+	toScan := collectDirectCallees(fn, moduleName)
+
+	seen := map[*ssa.Function]bool{}
+	var entries []DetectedEntry
+
+	for _, f := range toScan {
+		for _, block := range f.Blocks {
+			for _, instr := range block.Instrs {
+				callInstr, ok := instr.(ssa.CallInstruction)
+				if !ok {
+					continue
+				}
+				call := callInstr.Common()
+				if !call.IsInvoke() {
+					continue
+				}
+				if !isHandlerDispatch(call.Method.Name(), call.Value.Type()) {
+					continue
+				}
+				iface, ok := call.Value.Type().Underlying().(*types.Interface)
+				if !ok {
+					continue
+				}
+				methodName := call.Method.Name()
+				for _, candidate := range allFuncs {
+					if candidate.Name() != methodName {
+						continue
+					}
+					if candidate.Package() == nil {
+						continue
+					}
+					if !strings.HasPrefix(candidate.Package().Pkg.Path(), moduleName) {
+						continue
+					}
+					recv := candidate.Signature.Recv()
+					if recv == nil {
+						continue
+					}
+					recvType := recv.Type()
+					if !types.Implements(recvType, iface) {
+						if named, ok2 := recvType.(*types.Named); ok2 {
+							if !types.Implements(types.NewPointer(named), iface) {
+								continue
+							}
+						} else {
+							continue
+						}
+					}
+					if seen[candidate] {
+						continue
+					}
+					seen[candidate] = true
+					file, line := funcPosition(candidate, fset)
+					entries = append(entries, DetectedEntry{
+						Source:  "kafka",
+						Handler: candidate,
+						File:    file,
+						Line:    line,
+					})
+				}
+			}
+		}
+	}
+	return entries
+}
+
+// collectDirectCallees returns fn plus all functions that fn calls directly via
+// static (non-interface) calls within the same module. This gives a one-level
+// lookahead so that handler dispatches buried one call deep are still detected.
+func collectDirectCallees(fn *ssa.Function, moduleName string) []*ssa.Function {
+	result := []*ssa.Function{fn}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			callInstr, ok := instr.(ssa.CallInstruction)
+			if !ok {
+				continue
+			}
+			call := callInstr.Common()
+			if call.IsInvoke() {
+				continue
+			}
+			callee := call.StaticCallee()
+			if callee == nil || callee.Package() == nil {
+				continue
+			}
+			if !strings.HasPrefix(callee.Package().Pkg.Path(), moduleName) {
+				continue
+			}
+			result = append(result, callee)
+		}
+	}
+	return result
+}
+
+// isHandlerDispatch reports whether an interface method call looks like a Kafka
+// message handler dispatch: the method name starts with "Handle" or "Process",
+// and the interface type name contains "handler", "consumer", or "processor".
+func isHandlerDispatch(methodName string, ifaceType types.Type) bool {
+	if !strings.HasPrefix(methodName, "Handle") && !strings.HasPrefix(methodName, "Process") {
+		return false
+	}
+	typeName := strings.ToLower(ifaceType.String())
+	return strings.Contains(typeName, "handler") ||
+		strings.Contains(typeName, "consumer") ||
+		strings.Contains(typeName, "processor")
 }

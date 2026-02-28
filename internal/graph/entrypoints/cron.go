@@ -17,6 +17,20 @@ var cronPatterns = map[string]int{
 	"(*github.com/go-co-op/gocron.Scheduler).Do": 1,
 }
 
+// namedCronPattern describes a registration call that includes both a string name
+// and a handler function arg, so we can populate DetectedEntry.Path with the task name.
+type namedCronPattern struct {
+	handlerIdx int
+	nameIdx    int
+}
+
+// cronNamedPatterns are registration calls of the form (receiver, ..., name, handler).
+var cronNamedPatterns = map[string]namedCronPattern{
+	// libscheduler (internal Magnit library) — Scheduler.RegisterAction(ctx, name, actionFunc)
+	// Args: [receiver, ctx, name, actionFunc]
+	"(*gitlab.platform.corp/magnitonline/ecom/backend/libs/libscheduler.Scheduler).RegisterAction": {handlerIdx: 3, nameIdx: 2},
+}
+
 // cronJobPatterns maps qualified method names where the arg implements cron.Job interface.
 // The Job interface has a Run() method, so we look for that.
 var cronJobPatterns = map[string]int{
@@ -62,6 +76,41 @@ func FindCronJobs(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileS
 
 					entries = append(entries, DetectedEntry{
 						Source:  "cron",
+						Handler: handler,
+						File:    file,
+						Line:    line,
+					})
+					continue
+				}
+
+				// Named registration style — also captures the task name as Path
+				if p, matched := cronNamedPatterns[qualName]; matched {
+					args := call.Args
+					if len(args) <= p.handlerIdx {
+						continue
+					}
+
+					handler := extractFunction(args[p.handlerIdx])
+					if handler == nil {
+						continue
+					}
+
+					name := ""
+					if p.nameIdx < len(args) {
+						name = extractStringConst(args[p.nameIdx])
+					}
+
+					file := ""
+					line := 0
+					if pos := instr.Pos(); pos.IsValid() {
+						pp := fset.Position(pos)
+						file = pp.Filename
+						line = pp.Line
+					}
+
+					entries = append(entries, DetectedEntry{
+						Source:  "cron",
+						Path:    name,
 						Handler: handler,
 						File:    file,
 						Line:    line,

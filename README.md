@@ -1,28 +1,43 @@
-# Sauron Eye — Call Graph Analyser
+# Sauron Eye — Go Call Graph Analyser & AI Code Reviewer
 
-Static call-graph builder for Go projects with an interactive web visualiser.
+Static call-graph builder for Go projects with an interactive web visualiser
+and an AI-powered code review tool.
+
 Builds a full SSA call graph (CHA → VTA), detects entry points (HTTP handlers,
 Kafka consumers, gRPC handlers, cron jobs), extracts metadata (DB calls,
 transactions, HTTP calls, Kafka ops, Redis ops, channel sends/receives, deferred
-calls), and serialises everything to JSON for the web UI.
+calls), and serialises everything to JSON.
+
+The JSON can be explored in the web UI or sent to Claude for a structured review
+against a configurable checklist of production reliability and security rules.
+
+---
+
+## Tools
+
+| Tool | What it does |
+|------|-------------|
+| `callgraph` | Build a call graph and write it as JSON (used by the web UI) |
+| `review` | Interactive: pick an entry point and get a Claude AI review |
 
 ---
 
 ## Requirements
 
-| Tool | Version |
-|------|---------|
-| Go   | 1.22+   |
-| A Go project to analyse | any module-based Go project |
+| Requirement | Details |
+|------------|---------|
+| Go | 1.22+ |
+| Project to analyse | Any module-based Go project |
+| `ANTHROPIC_API_KEY` | Only required for `review` — set in environment or via `-api-key` flag |
 
-No external services needed — everything runs locally.
+No external services needed for `callgraph`. The web UI is a single static HTML file.
 
 ---
 
-## Quick start
+## Quick start — call graph + web UI
 
 ```bash
-# 1. Clone and build the analyser
+# 1. Clone and build
 git clone <repo-url> sauron-eye
 cd sauron-eye
 go build -o callgraph ./cmd/callgraph
@@ -30,10 +45,23 @@ go build -o callgraph ./cmd/callgraph
 # 2. Analyse a project
 ./callgraph -output graph.json /path/to/your/go/project
 
-# 3. Open the visualiser
+# 3. Open the visualiser, drop graph.json onto the page
 open web/index.html          # macOS
 xdg-open web/index.html      # Linux
-# Then drop graph.json onto the page
+```
+
+## Quick start — AI review
+
+```bash
+go build -o review ./cmd/review
+
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Run against a project — interactive entry point selection
+./review /path/to/your/go/project
+
+# Non-interactive (pre-select entry point 3, save output)
+./review -select 3 -output review.md /path/to/your/go/project
 ```
 
 ---
@@ -53,9 +81,11 @@ contain `go.mod`). Defaults to `.` if omitted.
 |------|---------|-------------|
 | `-max-depth` | `15` | Maximum call-tree traversal depth. Deeper = more complete graph but slower and larger output. |
 | `-scope` | `./...` | Comma-separated package patterns passed to `go/packages`. Restrict to a sub-tree to speed up analysis (e.g. `./internal/...`). |
+| `-pkg-filter` | module name | Comma-separated package path prefixes to recurse into. Nodes outside the filter are recorded but not expanded. |
 | `-output` | stdout | File path to write JSON to. If omitted, JSON is written to stdout. |
 | `-format` | `pretty` | `pretty` — indented JSON; `json` — compact JSON. |
 | `-no-source` | false | Strip source-code snippets from output. Reduces file size significantly; detail panel in the web UI will be empty. |
+| `-skip-generated` | false | Do not recurse into auto-generated files (`*.pb.go`, `*_gen.go`, files with `// Code generated` header). |
 | `-verbose` | false | Print progress lines to stderr (package count, SSA build, entry-point count, timings). |
 
 ### Examples
@@ -79,18 +109,117 @@ contain `go.mod`). Defaults to `.` if omitted.
 
 ---
 
-## Depth tuning
+## `review` — CLI reference
 
-`-max-depth` controls how many call levels are expanded from each entry point.
+```
+review [flags] [project-path]
+```
 
-| Value | When to use |
-|-------|-------------|
-| `6–10` | Quick review, large mono-repos, or when you only care about the top layers |
-| `15` (default) | Good balance for most services |
-| `20+` | Deep service with many abstraction layers; expect bigger output |
+Builds the call graph, presents a numbered list of all detected entry points,
+lets you pick one, then sends its full call tree (plus relevant concurrency
+conflicts and the project's `checks.md`) to Claude for a structured review.
 
-Nodes cut off by the depth limit are shown in the web UI as **`… max depth`** (grey).
-Actual call cycles are shown as **`↻ cycle`** (red). These are two distinct things.
+`project-path` defaults to `.`.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-api-key` | `$ANTHROPIC_API_KEY` | Anthropic API key. |
+| `-model` | `claude-opus-4-6` | Claude model to use. |
+| `-max-depth` | `15` | Maximum call-tree traversal depth. |
+| `-checks` | `<project>/checks.md` | Path to the checklist file sent to the LLM. |
+| `-select` | 0 (interactive) | Pre-select entry point by number, skipping the interactive prompt. Useful in CI. |
+| `-no-source` | false | Strip source code from the call graph before sending to Claude. Reduces token usage. |
+| `-output` | stdout | Write the LLM response to a file instead of stdout. |
+| `-verbose` | false | Print token usage and prompt sizes to stderr. |
+
+### Examples
+
+```bash
+# Interactive — shows list, prompts for selection
+./review ./my-service
+
+# Non-interactive — entry point 3, save to file
+./review -select 3 -output review.md ./my-service
+
+# Cheaper/faster model, skip source code
+./review -model claude-haiku-4-5-20251001 -no-source ./my-service
+
+# Custom checks file
+./review -checks ./config/my-checks.md ./my-service
+
+# Verbose — shows token counts
+./review -verbose -select 1 ./my-service
+```
+
+### Example session
+
+```
+Building call graph for /path/to/orders-service …
+(this typically takes 30–90 seconds)
+
+Module: github.com/company/orders-service
+Found 7 entry point(s):
+
+  [ 1]  HTTP POST    /api/orders                      → OrderHandler.CreateOrder
+  [ 2]  HTTP GET     /api/orders/:id                  → OrderHandler.GetOrder
+  [ 3]  HTTP DELETE  /api/orders/:id                  → OrderHandler.DeleteOrder
+  [ 4]  HTTP GET     /api/orders                      → OrderHandler.ListOrders
+  [ 5]  Kafka   topic=order.payment.confirmed         → PaymentConsumer.Handle
+  [ 6]  Kafka   topic=inventory.reserved              → InventoryConsumer.Handle
+  [ 7]  Cron    sync-pending-orders                   → Scheduler.SyncPending
+
+Enter number (1–7): 1
+
+Selected: HTTP POST /api/orders → OrderHandler.CreateOrder
+Sending to Claude (claude-opus-4-6) …
+
+### [CRITICAL] Multiple DB writes without transaction
+
+**Category:** Transactions
+**Location:** `internal/order/service.go:52` in `(*Service).CreateOrder()`
+
+OrderRepository.Save() and InventoryRepository.Reserve() are called
+sequentially without a wrapping transaction. If Reserve() fails, the order
+is already committed — inconsistent state.
+
+**Fix:** Wrap both calls in a `sql.Tx` obtained from the DB, pass it through
+context or as an explicit argument to both repositories.
+
+**Call path:** POST /api/orders → OrderHandler.CreateOrder → Service.CreateOrder
+→ InventoryService.Reserve → InventoryRepository.Reserve
+```
+
+---
+
+## `checks.md` — the review checklist
+
+`checks.md` at the project root defines what the LLM looks for in every review.
+It is plain Markdown — edit it to add, remove, or tune rules for your codebase.
+
+The default file covers eight categories:
+
+| Category | Examples |
+|----------|---------|
+| **Transactions** | Missing TX, TX too broad, no rollback on error |
+| **Resilience** | HTTP without timeout, Kafka publish inside TX, no retry |
+| **State Machine** | Transition from terminal state, no guard on current status |
+| **Data Flow** | IDOR, unsanitized input, money field without validation |
+| **Temporal Order** | TOCTOU, wrong operation order, no compensation on partial failure |
+| **Concurrency** | HTTP vs Kafka race, double-spend, non-idempotent Kafka consumer |
+| **Schema** | Nullable column as non-pointer, soft-delete filter missing |
+| **Load Patterns** | N+1 queries, unbounded SELECT, cache stampede |
+
+You can maintain different check files per environment:
+
+```bash
+# Strict (payments service)
+./review -checks checks-payments.md ./payments-service
+
+# Relaxed (legacy service)
+./review -checks checks-legacy.md ./legacy-service
+```
 
 ---
 
@@ -177,8 +306,9 @@ The JSON output is a `BuildResult`:
 
 ```json
 {
+  "module": "github.com/company/my-service",
   "graphs": [ ... ],         // one CallGraph per entry point
-  "used_pta": true,          // false = fell back to CHA only
+  "used_vta": true,          // false = fell back to CHA only
   "errors": [ ... ],         // non-fatal warnings from the analysis
   "conflicts": [ ... ]       // concurrency conflicts detected
 }
@@ -234,6 +364,21 @@ Each `CallNode`:
 
 ---
 
+## Depth tuning
+
+`-max-depth` controls how many call levels are expanded from each entry point.
+
+| Value | When to use |
+|-------|-------------|
+| `6–10` | Quick review, large mono-repos, or when you only care about the top layers |
+| `15` (default) | Good balance for most services |
+| `20+` | Deep service with many abstraction layers; expect bigger output |
+
+Nodes cut off by the depth limit are shown in the web UI as **`… max depth`** (grey).
+Actual call cycles are shown as **`↻ cycle`** (red). These are two distinct things.
+
+---
+
 ## How it works
 
 ```
@@ -267,5 +412,41 @@ Per-entry-point DFS traversal (max depth 15)
 Shared resource analysis  (concurrency conflict detection)
     │
     ▼
-JSON output  →  web/index.html
+JSON output
+  ├── web/index.html  (visual explorer)
+  └── review CLI      (Claude AI review)
+```
+
+---
+
+## Repository layout
+
+```
+cmd/
+  callgraph/     CLI — build call graph, write JSON
+  review/        CLI — interactive AI review via Claude
+
+internal/
+  graph/
+    builder.go       SSA loader + call graph construction
+    traversal.go     DFS traversal with metadata extraction
+    metadata.go      SSA instruction → DBCall / TxOp / HTTPCall / …
+    concurrency.go   Shared resource analyser
+    serializer.go    JSON serialisation
+    types.go         Shared types (CallNode, EntryPoint, …)
+    channel_link.go  Channel send → consumer edge builder
+    entrypoints/
+      detector.go    Entry point finder orchestrator
+      http.go        HTTP handler detection (Gin/Echo/Chi/stdlib)
+      kafka.go       Kafka consumer detection
+      grpc.go        gRPC handler detection
+      cron.go        Cron job detection
+  review/
+    claude.go        Anthropic API client (raw HTTP)
+    prompt.go        Prompt builder (system + user message)
+
+web/
+  index.html     Single-file interactive visualiser
+
+checks.md        Configurable review checklist for the LLM
 ```

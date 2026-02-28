@@ -33,7 +33,7 @@ func FindAll(prog *ssa.Program, fset *token.FileSet, moduleName string) []Detect
 
 	// Run each detector
 	entries = append(entries, FindHTTPHandlers(prog, allFuncs, fset, moduleName)...)
-	entries = append(entries, FindKafkaConsumers(prog, allFuncs, fset)...)
+	entries = append(entries, FindKafkaConsumers(prog, allFuncs, fset, moduleName)...)
 	entries = append(entries, FindGRPCHandlers(prog, allFuncs, fset)...)
 	entries = append(entries, FindCronJobs(prog, allFuncs, fset)...)
 
