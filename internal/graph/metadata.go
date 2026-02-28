@@ -458,10 +458,18 @@ func hasHTTPClientTimeout(val ssa.Value) bool {
 			}
 		}
 		// Check if any FieldAddr stores to the Timeout field.
-		for _, ref := range *v.Referrers() {
+		refs := v.Referrers()
+		if refs == nil {
+			return false
+		}
+		for _, ref := range *refs {
 			if fa, ok := ref.(*ssa.FieldAddr); ok {
 				if fa.Field == timeoutIdx {
-					for _, r := range *fa.Referrers() {
+					faRefs := fa.Referrers()
+					if faRefs == nil {
+						continue
+					}
+					for _, r := range *faRefs {
 						if _, ok := r.(*ssa.Store); ok {
 							return true
 						}

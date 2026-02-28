@@ -15,6 +15,7 @@ type DetectedEntry struct {
 	Source        string // "http", "kafka", "grpc", "cron"
 	Method        string // HTTP method or empty
 	Path          string // route path or topic name
+	Framework     string // e.g. "echo", "gin", "chi", "stdlib", "sarama", "grpc"
 	Handler       *ssa.Function
 	File          string
 	Line          int
@@ -66,8 +67,8 @@ func flattenFunctions(fn *ssa.Function) []*ssa.Function {
 	return result
 }
 
-// extractStringConst extracts a string constant from an SSA value, returning empty string if not constant.
-func extractStringConst(val ssa.Value) string {
+// ExtractStringConst extracts a string constant from an SSA value, returning empty string if not constant.
+func ExtractStringConst(val ssa.Value) string {
 	if c, ok := val.(*ssa.Const); ok {
 		// Unquote the string value
 		s := c.Value.String()
@@ -79,10 +80,36 @@ func extractStringConst(val ssa.Value) string {
 	return ""
 }
 
-// extractFunction extracts an *ssa.Function from an SSA value.
+// ExtractStringBestEffort extracts a string from an SSA value.
+// For plain constants it returns the full value; for BinOp concatenations
+// (e.g. baseURL + "/v1/claims/create") it recursively collects all constant
+// fragments, joining them with "". Non-constant parts are represented as "*".
+// Returns "" when no string fragment can be found at all.
+func ExtractStringBestEffort(val ssa.Value) string {
+	switch v := val.(type) {
+	case *ssa.Const:
+		return ExtractStringConst(v)
+	case *ssa.BinOp:
+		// Only handle string concatenation (+).
+		if v.Op.String() != "+" {
+			return ""
+		}
+		left := ExtractStringBestEffort(v.X)
+		right := ExtractStringBestEffort(v.Y)
+		// If one side is unknown, represent it as "*" so callers can still
+		// see the constant suffix/prefix.
+		if left == "" {
+			left = "*"
+		}
+		return left + right
+	}
+	return ""
+}
+
+// ExtractFunction extracts an *ssa.Function from an SSA value.
 // Handles direct function references, closures, type coercions (ChangeType),
 // and variadic slices (e.g. gin's ...HandlerFunc).
-func extractFunction(val ssa.Value) *ssa.Function {
+func ExtractFunction(val ssa.Value) *ssa.Function {
 	switch v := val.(type) {
 	case *ssa.Function:
 		return v
@@ -92,10 +119,10 @@ func extractFunction(val ssa.Value) *ssa.Function {
 		}
 	case *ssa.ChangeType:
 		// Type coercion: e.g. changetype gin.HandlerFunc <- func(*gin.Context)
-		return extractFunction(v.X)
+		return ExtractFunction(v.X)
 	case *ssa.MakeInterface:
 		// Interface wrapping: unwrap to get underlying function
-		return extractFunction(v.X)
+		return ExtractFunction(v.X)
 	case *ssa.Slice:
 		// Variadic call: Go compiles f(a, handler) where f is func(...T) into
 		// a slice allocation, store handler at index 0, then pass slice.
@@ -140,7 +167,7 @@ func extractFunctionFromSlice(s *ssa.Slice) *ssa.Function {
 			if !ok {
 				continue
 			}
-			if fn := extractFunction(store.Val); fn != nil {
+			if fn := ExtractFunction(store.Val); fn != nil {
 				return fn
 			}
 		}
@@ -148,8 +175,8 @@ func extractFunctionFromSlice(s *ssa.Slice) *ssa.Function {
 	return nil
 }
 
-// calleeQualName returns the qualified name of a static callee, or empty string.
-func calleeQualName(call *ssa.CallCommon) string {
+// CalleeQualName returns the qualified name of a static callee, or empty string.
+func CalleeQualName(call *ssa.CallCommon) string {
 	if fn := call.StaticCallee(); fn != nil {
 		return fn.RelString(nil)
 	}

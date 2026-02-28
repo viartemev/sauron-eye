@@ -80,6 +80,20 @@
     }
     .sidebar-toggle-btn:hover { border-color: var(--muted); color: var(--muted); }
     .sidebar-toggle-btn.active { border-color: #7c3aed; color: #a78bfa; background: rgba(124,58,237,.1); }
+
+    /* Search box */
+    #ep-search-wrap {
+      padding: 6px 10px; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-shrink: 0;
+    }
+    #ep-search {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 5px 9px; color: var(--text); font-size: 11px;
+      outline: none; transition: border-color .12s;
+    }
+    #ep-search:focus { border-color: #7c3aed; }
+    #ep-search::placeholder { color: var(--dim); }
+
     #pkg-filter-wrap {
       display: flex; align-items: center; gap: 6px;
       background: var(--surface2); border: 1px solid var(--border);
@@ -107,9 +121,32 @@
     }
     .ep-item:hover { background: var(--surface2); }
     .ep-item.active { background: #0d2044; border-color: #1d4ed8; }
+    .ep-item.hidden { display: none; }
     .ep-icon { font-size: 13px; margin-top: 2px; flex-shrink: 0; }
-    .ep-info { min-width: 0; }
-    .ep-method { font-size: 10px; font-weight: 700; color: #60a5fa; }
+    .ep-info { min-width: 0; flex: 1; }
+    .ep-top  { display: flex; align-items: center; gap: 5px; margin-bottom: 1px; }
+    .ep-method {
+      font-size: 10px; font-weight: 700; flex-shrink: 0;
+    }
+    /* HTTP method colors */
+    .m-GET     { color: #22c55e; }
+    .m-POST    { color: #3b82f6; }
+    .m-PUT     { color: #f59e0b; }
+    .m-DELETE  { color: #ef4444; }
+    .m-PATCH   { color: #a855f7; }
+    .m-HEAD    { color: #8b949e; }
+    .m-OPTIONS { color: #8b949e; }
+    .m-ANY     { color: #60a5fa; }
+    .m-other   { color: #60a5fa; }
+    /* Framework badge */
+    .fw-badge {
+      font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 3px;
+      background: rgba(124,58,237,.15); color: #a78bfa;
+      border: 1px solid rgba(124,58,237,.25); flex-shrink: 0;
+    }
+    .fw-badge.fw-grpc  { background: rgba(14,165,233,.15); color: #7dd3fc; border-color: rgba(14,165,233,.25); }
+    .fw-badge.fw-kafka { background: rgba(185,28,28,.15); color: #f87171; border-color: rgba(185,28,28,.25); }
+    .fw-badge.fw-stdlib{ background: rgba(75,85,99,.2);   color: #9ca3af; border-color: rgba(75,85,99,.3); }
     .ep-path { font-size: 12px; font-family: 'SF Mono','Fira Code',monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ep-fn { font-size: 10px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ep-item.stdlib .ep-path { color: var(--dim); }
@@ -128,6 +165,21 @@
     .node-g { cursor: pointer; }
     .node-g.selected .node-bg { stroke: #f0f6fc !important; stroke-width: 2px !important; }
     .node-g:hover .node-bg { filter: brightness(1.15); }
+
+    /* ── ENTRY POINT BREADCRUMB ── */
+    #ep-breadcrumb {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      display: none; align-items: center; gap: 6px;
+      background: rgba(22,27,34,.95); border: 1px solid var(--border);
+      border-radius: 20px; padding: 5px 14px; font-size: 12px;
+      pointer-events: none; z-index: 10; white-space: nowrap;
+      backdrop-filter: blur(4px);
+    }
+    #ep-breadcrumb.visible { display: flex; }
+    .bc-method { font-weight: 700; font-size: 11px; }
+    .bc-fw     { font-size: 10px; color: #a78bfa; }
+    .bc-path   { font-family: 'SF Mono','Fira Code',monospace; color: var(--text); }
+    .bc-sep    { color: var(--dim); }
 
     /* ── DETAIL PANEL ── */
     #detail-panel {
@@ -179,8 +231,35 @@
     .source-pre {
       font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 11px;
       line-height: 1.65; background: #010409; border: 1px solid var(--border);
-      border-radius: 6px; padding: 12px; overflow: auto; color: #79c0ff;
-      white-space: pre; max-height: 480px;
+      border-radius: 6px; padding: 12px; overflow: auto; color: #c9d1d9;
+      white-space: pre; max-height: 600px;
+    }
+    /* Go syntax highlight */
+    .go-kw      { color: #ff7b72; }
+    .go-type    { color: #ffa657; }
+    .go-fn      { color: #d2a8ff; }
+    .go-builtin { color: #ffa657; }
+    .go-const   { color: #79c0ff; }
+    .go-string  { color: #a5d6ff; }
+    .go-comment { color: #8b949e; font-style: italic; }
+    .go-number  { color: #79c0ff; }
+
+    /* ── RESIZE HANDLE ── */
+    #resize-handle {
+      width: 4px; background: var(--border); cursor: col-resize;
+      flex-shrink: 0; display: none; transition: background .15s;
+    }
+    #resize-handle:hover, #resize-handle.active { background: #7c3aed; }
+    #detail-panel.resizing { transition: none !important; }
+    /* EP info row in detail panel */
+    .ep-route-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 7px 10px;
+    }
+    .ep-route-row .epr-path {
+      font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
+      color: var(--text); word-break: break-all;
     }
 
     /* ── CONFLICTS BAR ── */
@@ -303,6 +382,9 @@
         <button class="sidebar-toggle-btn" id="btn-hide-generated">hide gen</button>
       </div>
     </div>
+    <div id="ep-search-wrap">
+      <input id="ep-search" type="text" placeholder="Filter by path or name…" spellcheck="false" autocomplete="off">
+    </div>
     <div id="ep-list"></div>
   </div>
 
@@ -310,6 +392,14 @@
     <div id="empty">
       <div class="ei">🌳</div>
       <p>Select an entry point from the sidebar</p>
+    </div>
+    <!-- Breadcrumb: shows selected entry point context -->
+    <div id="ep-breadcrumb">
+      <span class="bc-fw" id="bc-fw"></span>
+      <span class="bc-method" id="bc-method"></span>
+      <span class="bc-path" id="bc-path"></span>
+      <span class="bc-sep">→</span>
+      <span style="color:var(--muted);font-size:11px" id="bc-fn"></span>
     </div>
     <svg id="tree-svg">
       <g id="tc"></g>
@@ -336,6 +426,7 @@
     </div>
   </div>
 
+  <div id="resize-handle"></div>
   <div id="detail-panel" class="closed">
     <div id="detail-header">
       <h3 id="d-title">Details</h3>
@@ -367,6 +458,21 @@ const CAT_COLOR = {
   producer:    '#b91c1c',
   unknown:     '#374151',
 };
+
+// HTTP method → display color (matches .m-* CSS classes)
+const METHOD_COLOR = {
+  GET:     '#22c55e',
+  POST:    '#3b82f6',
+  PUT:     '#f59e0b',
+  DELETE:  '#ef4444',
+  PATCH:   '#a855f7',
+  HEAD:    '#8b949e',
+  OPTIONS: '#8b949e',
+  ANY:     '#60a5fa',
+};
+
+function methodColor(m) { return METHOD_COLOR[m] || METHOD_COLOR.ANY; }
+function methodClass(m) { return 'm-' + (METHOD_COLOR[m] ? m : 'other'); }
 
 function shortName(fn) {
   if (!fn) return '?';
@@ -414,7 +520,93 @@ function escHtml(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Go syntax highlighter ────────────────────────────────
+function highlightGo(code) {
+  const KW = new Set(['break','case','chan','const','continue','default','defer',
+    'else','fallthrough','for','func','go','goto','if','import','interface','map',
+    'package','range','return','select','struct','switch','type','var']);
+  const TYPES = new Set(['bool','byte','complex64','complex128','error',
+    'float32','float64','int','int8','int16','int32','int64','rune','string',
+    'uint','uint8','uint16','uint32','uint64','uintptr','any','comparable']);
+  const BUILTINS = new Set(['append','cap','close','complex','copy','delete',
+    'imag','len','make','new','panic','print','println','real','recover','min','max','clear']);
+  const CONSTS = new Set(['true','false','nil','iota']);
+
+  let i = 0, out = '';
+  const n = code.length;
+  const sp = (cls, txt) => `<span class="go-${cls}">${escHtml(txt)}</span>`;
+
+  while (i < n) {
+    // Line comment
+    if (code[i] === '/' && code[i+1] === '/') {
+      const s = i; while (i < n && code[i] !== '\n') i++;
+      out += sp('comment', code.slice(s, i)); continue;
+    }
+    // Block comment
+    if (code[i] === '/' && code[i+1] === '*') {
+      const s = i; i += 2;
+      while (i < n && !(code[i-1] === '*' && code[i] === '/')) i++;
+      if (i < n) i++;
+      out += sp('comment', code.slice(s, i)); continue;
+    }
+    // Raw string
+    if (code[i] === '`') {
+      const s = i++; while (i < n && code[i] !== '`') i++;
+      if (i < n) i++;
+      out += sp('string', code.slice(s, i)); continue;
+    }
+    // Interpreted string
+    if (code[i] === '"') {
+      const s = i++;
+      while (i < n && code[i] !== '"' && code[i] !== '\n') {
+        if (code[i] === '\\') i++; i++;
+      }
+      if (i < n && code[i] === '"') i++;
+      out += sp('string', code.slice(s, i)); continue;
+    }
+    // Rune literal
+    if (code[i] === "'") {
+      const s = i++;
+      while (i < n && code[i] !== "'" && code[i] !== '\n') {
+        if (code[i] === '\\') i++; i++;
+      }
+      if (i < n && code[i] === "'") i++;
+      out += sp('string', code.slice(s, i)); continue;
+    }
+    // Number
+    if (/[0-9]/.test(code[i])) {
+      const s = i;
+      while (i < n && /[0-9a-fA-FxXoObBpPeE._]/.test(code[i])) i++;
+      out += sp('number', code.slice(s, i)); continue;
+    }
+    // Identifier / keyword
+    if (/[a-zA-Z_]/.test(code[i])) {
+      const s = i;
+      while (i < n && /[a-zA-Z0-9_]/.test(code[i])) i++;
+      const w = code.slice(s, i);
+      // peek past whitespace for next char
+      let j = i; while (j < n && (code[j] === ' ' || code[j] === '\t')) j++;
+      const next = j < n ? code[j] : '';
+      if      (KW.has(w))      out += sp('kw',      w);
+      else if (TYPES.has(w))   out += sp('type',    w);
+      else if (CONSTS.has(w))  out += sp('const',   w);
+      else if (BUILTINS.has(w))out += sp('builtin', w);
+      else if (next === '(')   out += sp('fn',      w);
+      else if (/^[A-Z]/.test(w)) out += sp('type',  w);
+      else                     out += escHtml(w);
+      continue;
+    }
+    // Everything else (operators, punctuation, whitespace)
+    out += escHtml(code[i]); i++;
+  }
+  return out;
+}
+
+// Use framework field when present; fall back to path heuristics for older JSON.
 function isStdlib(ep) {
+  if (ep.framework === 'stdlib') return true;
+  if (ep.framework && ep.framework !== '') return false;
+  // Fallback for JSON without framework field
   const fn = ep.function_name || '';
   const f  = ep.file || '';
   return fn.startsWith('expvar') || fn.startsWith('golang.org') ||
@@ -479,6 +671,28 @@ document.getElementById('btn-hide-generated').addEventListener('click', function
 document.getElementById('btn-load').addEventListener('click', () => {
   document.getElementById('upload').classList.remove('gone');
   clearTree();
+});
+
+// ── Sidebar search ──────────────────────────────────────
+document.getElementById('ep-search').addEventListener('input', function() {
+  const q = this.value.trim().toLowerCase();
+  document.querySelectorAll('.ep-item').forEach(el => {
+    if (!q) { el.classList.remove('hidden'); return; }
+    const text = (el.dataset.search || '').toLowerCase();
+    el.classList.toggle('hidden', !text.includes(q));
+  });
+  // Hide group labels when all items in the group are hidden
+  document.querySelectorAll('.group-label').forEach(lbl => {
+    let next = lbl.nextElementSibling;
+    let anyVisible = false;
+    while (next && !next.classList.contains('group-label')) {
+      if (next.classList.contains('ep-item') && !next.classList.contains('hidden')) {
+        anyVisible = true; break;
+      }
+      next = next.nextElementSibling;
+    }
+    lbl.style.display = anyVisible ? '' : 'none';
+  });
 });
 
 // ════════════════════════════════════════════════════════
@@ -554,20 +768,33 @@ function buildSidebar(graphs) {
 }
 
 function makeEpItem(g, idx, icon) {
-  const ep   = g.entry_point;
+  const ep     = g.entry_point;
   const stdlib = isStdlib(ep);
-  const el   = document.createElement('div');
+  const el     = document.createElement('div');
   el.className = 'ep-item' + (stdlib ? ' stdlib' : '');
   el.dataset.idx = idx;
 
   const path   = ep.path || ep.topic || shortName(ep.function_name);
-  const method = (ep.method && ep.method !== 'ANY') ? ep.method : (ep.source || '').toUpperCase();
+  const method = ep.method && ep.method !== 'ANY'
+    ? ep.method
+    : (ep.source || '').toUpperCase();
   const fn     = shortName(ep.function_name);
+  const fw     = ep.framework || '';
+
+  // data-search covers path, method, fn name and framework for the search filter
+  el.dataset.search = [path, method, fn, fw].join(' ');
+
+  const fwBadge = fw
+    ? `<span class="fw-badge fw-${escHtml(fw)}">${escHtml(fw)}</span>`
+    : '';
 
   el.innerHTML = `
     <div class="ep-icon">${icon}</div>
     <div class="ep-info">
-      <div class="ep-method">${escHtml(method)}</div>
+      <div class="ep-top">
+        <span class="ep-method ${methodClass(method)}">${escHtml(method)}</span>
+        ${fwBadge}
+      </div>
       <div class="ep-path" title="${escHtml(path)}">${escHtml(path || fn)}</div>
       <div class="ep-fn">${escHtml(fn)}</div>
     </div>`;
@@ -579,6 +806,20 @@ function makeEpItem(g, idx, icon) {
     renderTree(DATA.graphs[idx]);
   });
   return el;
+}
+
+// ════════════════════════════════════════════════════════
+//  BREADCRUMB
+// ════════════════════════════════════════════════════════
+function showBreadcrumb(ep) {
+  const bc = document.getElementById('ep-breadcrumb');
+  const method = ep.method || ep.source || '';
+  document.getElementById('bc-fw').textContent     = ep.framework ? ep.framework : '';
+  document.getElementById('bc-method').textContent = method;
+  document.getElementById('bc-method').style.color = methodColor(method);
+  document.getElementById('bc-path').textContent   = ep.path || ep.topic || '';
+  document.getElementById('bc-fn').textContent     = shortName(ep.function_name);
+  bc.classList.add('visible');
 }
 
 // ════════════════════════════════════════════════════════
@@ -624,6 +865,7 @@ function clearTree() {
   document.getElementById('tc').innerHTML = '';
   document.getElementById('empty').style.display = 'flex';
   document.getElementById('empty').innerHTML = '<div class="ei">🌳</div><p>Select an entry point from the sidebar</p>';
+  document.getElementById('ep-breadcrumb').classList.remove('visible');
   closeDetail();
 }
 
@@ -631,6 +873,8 @@ function renderTree(graph) {
   document.getElementById('empty').style.display = 'none';
   const tc = document.getElementById('tc');
   tc.innerHTML = '';
+
+  showBreadcrumb(graph.entry_point);
 
   if (!graph.root) {
     document.getElementById('empty').style.display = 'flex';
@@ -681,7 +925,7 @@ function renderTree(graph) {
       ev.stopPropagation();
       d3.selectAll('.node-g').classed('selected', false);
       d3.select(ev.currentTarget).classed('selected', true);
-      if (!d.data._trunc && d.data._n) showDetail(d.data._n);
+      if (!d.data._trunc && d.data._n) showDetail(d.data._n, graph.entry_point);
     });
 
   // Background rect
@@ -768,7 +1012,6 @@ function renderTree(graph) {
     });
 
   // Truncated node — distinguish: gen stub vs cycle vs depth cutoff
-  // Background tint for gen stubs
   node.filter(d => !!d.data._trunc)
     .attr('opacity', d => d.data._gen ? 0.75 : 1);
 
@@ -824,13 +1067,32 @@ function renderTree(graph) {
 // ════════════════════════════════════════════════════════
 //  DETAIL PANEL
 // ════════════════════════════════════════════════════════
-function showDetail(n) {
-  document.getElementById('detail-panel').classList.remove('closed');
+function showDetail(n, entryPoint) {
+  const panel = document.getElementById('detail-panel');
+  panel.style.width = detailWidth + 'px';
+  panel.classList.remove('closed');
+  document.getElementById('resize-handle').style.display = 'block';
   const cat   = n.category || 'unknown';
   const color = CAT_COLOR[cat] || CAT_COLOR.unknown;
   const meta  = countMeta(n);
 
   let h = '';
+
+  // If this is the root node (function name matches the entry point), show route info
+  if (entryPoint && n.function_name === entryPoint.function_name) {
+    const ep = entryPoint;
+    const method = ep.method || '';
+    const mcol   = methodColor(method);
+    const fw     = ep.framework || '';
+    const path   = ep.path || ep.topic || '';
+    if (method || path || fw) {
+      h += `<div class="ds"><h4>Route</h4><div class="ep-route-row">`;
+      if (method) h += `<span style="font-weight:700;font-size:12px;color:${escHtml(mcol)}">${escHtml(method)}</span>`;
+      if (fw)     h += `<span class="fw-badge fw-${escHtml(fw)}">${escHtml(fw)}</span>`;
+      if (path)   h += `<span class="epr-path">${escHtml(path)}</span>`;
+      h += `</div></div>`;
+    }
+  }
 
   // Category + location
   h += `<div class="ds">
@@ -921,7 +1183,7 @@ function showDetail(n) {
 
   // Source code
   if (n.source_code) {
-    h += `<div class="ds"><h4>Source Code</h4><pre class="source-pre">${escHtml(n.source_code)}</pre></div>`;
+    h += `<div class="ds"><h4>Source Code</h4><pre class="source-pre">${highlightGo(n.source_code)}</pre></div>`;
   }
 
   document.getElementById('d-title').textContent = shortName(n.function_name);
@@ -930,6 +1192,7 @@ function showDetail(n) {
 
 function closeDetail() {
   document.getElementById('detail-panel').classList.add('closed');
+  document.getElementById('resize-handle').style.display = 'none';
 }
 document.getElementById('detail-close').addEventListener('click', closeDetail);
 
@@ -963,6 +1226,41 @@ document.getElementById('ctoggle').addEventListener('click', () => {
   conflictsOpen = !conflictsOpen;
   document.getElementById('ccontent').classList.toggle('closed', !conflictsOpen);
   document.getElementById('cchev').textContent = conflictsOpen ? '▲' : '▼';
+});
+
+// ════════════════════════════════════════════════════════
+//  RESIZE DETAIL PANEL
+// ════════════════════════════════════════════════════════
+let detailWidth = 350;
+let resizing = false, resizeStartX = 0, resizeStartW = 0;
+const resizeHandle = document.getElementById('resize-handle');
+const detailPanel  = document.getElementById('detail-panel');
+
+resizeHandle.addEventListener('mousedown', e => {
+  resizing = true;
+  resizeStartX = e.clientX;
+  resizeStartW = detailPanel.offsetWidth;
+  resizeHandle.classList.add('active');
+  detailPanel.classList.add('resizing');
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', e => {
+  if (!resizing) return;
+  const dx = resizeStartX - e.clientX; // drag left = wider
+  detailWidth = Math.min(900, Math.max(180, resizeStartW + dx));
+  detailPanel.style.width = detailWidth + 'px';
+});
+
+document.addEventListener('mouseup', () => {
+  if (!resizing) return;
+  resizing = false;
+  resizeHandle.classList.remove('active');
+  detailPanel.classList.remove('resizing');
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
 });
 </script>
 </body>

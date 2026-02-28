@@ -313,15 +313,13 @@ func categorizeFunction(fn *ssa.Function) NodeCategory {
 	return CategoryUnknown
 }
 
-// extractSource extracts the source code of a function (up to 50 lines).
+// extractSource extracts the source code of a function (up to 150 lines).
 func (t *Traversal) extractSource(fn *ssa.Function) string {
-	if fn.Syntax() == nil || !fn.Pos().IsValid() {
+	if !fn.Pos().IsValid() {
 		return ""
 	}
 
 	startPos := t.fset.Position(fn.Pos())
-	endPos := t.fset.Position(fn.Syntax().End())
-
 	if startPos.Filename == "" {
 		return ""
 	}
@@ -332,19 +330,52 @@ func (t *Traversal) extractSource(fn *ssa.Function) string {
 	}
 
 	startLine := startPos.Line - 1 // convert to 0-indexed
-	endLine := endPos.Line          // inclusive end, 0-indexed = endPos.Line-1, +1 to include
-
 	if startLine < 0 {
 		startLine = 0
 	}
+
+	// Prefer SSA syntax node for the exact end position.
+	// fn.Syntax() may be nil when SSA doesn't link the AST (e.g. when packages
+	// are loaded with incomplete type info or in certain generated-code paths).
+	// In that case fall back to brace counting.
+	var endLine int
+	if fn.Syntax() != nil {
+		endLine = t.fset.Position(fn.Syntax().End()).Line
+	} else {
+		endLine = findFuncEnd(lines, startLine)
+	}
+
 	if endLine > len(lines) {
 		endLine = len(lines)
+	}
+	if endLine <= startLine {
+		endLine = startLine + 1
 	}
 	if endLine-startLine > 150 {
 		endLine = startLine + 150
 	}
 
 	return strings.Join(lines[startLine:endLine], "\n")
+}
+
+// findFuncEnd scans lines from startLine forward and returns the line number
+// (1-indexed, exclusive) where the function body ends, detected by balanced
+// braces. Falls back to startLine+150 if no closing brace is found.
+func findFuncEnd(lines []string, startLine int) int {
+	depth := 0
+	for i := startLine; i < len(lines) && i < startLine+150; i++ {
+		for _, ch := range lines[i] {
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+				if depth == 0 {
+					return i + 1 // exclusive end
+				}
+			}
+		}
+	}
+	return startLine + 150
 }
 
 // isGeneratedFile returns true if the source file was auto-generated.

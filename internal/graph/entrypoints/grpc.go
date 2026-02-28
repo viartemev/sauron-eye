@@ -24,7 +24,7 @@ func FindGRPCHandlers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.F
 				}
 
 				call := callInstr.Common()
-				qualName := calleeQualName(call)
+				qualName := CalleeQualName(call)
 
 				// Match both:
 				//   static call:    (*grpc.Server).RegisterService  — old proto-gen style

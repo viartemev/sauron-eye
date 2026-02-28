@@ -27,6 +27,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	_ "sauron-eye/internal/graph/entrypoints/frameworks/all"
 	"strings"
 
 	"sauron-eye/internal/graph"

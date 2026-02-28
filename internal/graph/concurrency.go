@@ -188,14 +188,24 @@ func detectProtection(node *CallNode, resource string) ConcurrencyProtection {
 	// Check SQL patterns in DB calls for this node
 	for _, dbCall := range node.DBCalls {
 		q := strings.ToLower(dbCall.Query)
+		isWrite := isWriteMethod(dbCall.Method)
+
 		if strings.Contains(q, "for update") || strings.Contains(q, "for share") {
 			p.HasPessimisticLock = true
 		}
-		if strings.Contains(q, "where version") || strings.Contains(q, "where updated_at") {
+		// Optimistic lock: only meaningful on write queries that include a
+		// version/timestamp column in the WHERE clause (e.g. UPDATE ... WHERE version = ?).
+		// A SELECT on a "versions" table or any non-write query is not an optimistic lock.
+		if isWrite && (strings.Contains(q, "where version =") ||
+			strings.Contains(q, "where version=") ||
+			strings.Contains(q, "where updated_at =") ||
+			strings.Contains(q, "where updated_at=")) {
 			p.HasOptimisticLock = true
 		}
-		// Atomic UPDATE: UPDATE ... SET ... WHERE status=? (no prior SELECT)
-		if isWriteMethod(dbCall.Method) && strings.Contains(q, "where") {
+		// Atomic UPDATE: UPDATE ... SET status=X WHERE status=Y (state-machine style).
+		// Require both a write method AND a status/state predicate to avoid treating
+		// every primary-key UPDATE as a protection mechanism.
+		if isWrite && (strings.Contains(q, "where status") || strings.Contains(q, "where state")) {
 			p.HasAtomicUpdate = true
 		}
 	}

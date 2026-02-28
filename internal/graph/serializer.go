@@ -59,7 +59,7 @@ func stripNodeSource(node *CallNode) *CallNode {
 	if len(node.Children) > 0 {
 		n.Children = make([]*CallEdge, len(node.Children))
 		for i, edge := range node.Children {
-			stripped := &CallEdge{Line: edge.Line}
+			stripped := &CallEdge{Line: edge.Line, Via: edge.Via, Deferred: edge.Deferred}
 			if edge.Callee != nil {
 				stripped.Callee = stripNodeSource(edge.Callee)
 			}

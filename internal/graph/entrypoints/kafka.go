@@ -73,7 +73,7 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 				if len(call.Args) == 0 {
 					continue
 				}
-				inner := extractFunction(call.Args[0])
+				inner := ExtractFunction(call.Args[0])
 				if inner == nil {
 					continue
 				}
@@ -120,11 +120,18 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 				}
 
 				call := callInstr.Common()
-				qualName := calleeQualName(call)
+				qualName := CalleeQualName(call)
+				// For interface invocations (call.IsInvoke()), StaticCallee is nil and
+				// qualName is "". Synthesise ".MethodName" so the pattern checks below work.
+				if qualName == "" && call.IsInvoke() {
+					qualName = "." + call.Method.Name()
+				}
 				if !kafkaConsumerPatterns[qualName] {
 					// Also match calls whose method name is in the kafka pattern set but on a
 					// different receiver type — e.g. generated consumer wrappers that proxy to
-					// the real kafka.Reader internally ((*GeneratedConsumer).FetchMessage).
+					// the real kafka.Reader internally ((*GeneratedConsumer).FetchMessage), or
+					// projects using a custom consumer loop that calls FetchMessage via an
+					// interface (e.g. consumer[T].Consume → c.handler.FetchMessage(ctx)).
 					dot := strings.LastIndex(qualName, ".")
 					if dot < 0 || !kafkaPatternMethods[qualName[dot+1:]] {
 						continue
@@ -144,13 +151,13 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 				topic := ""
 				args := call.Args
 				if strings.Contains(qualName, ".Consume") && len(args) >= 2 {
-					topic = extractTopicFromArg(args[1])
+					topic = ExtractTopicFromArg(args[1])
 				}
 
 				// The handler (ConsumerGroupHandler) for sarama is the last arg
 				var handler *ssa.Function
 				if strings.Contains(qualName, ".Consume") && len(args) >= 3 {
-					handler = extractFunction(args[len(args)-1])
+					handler = ExtractFunction(args[len(args)-1])
 				}
 
 				// For ReadMessage/FetchMessage, the current function IS the handler
@@ -158,23 +165,38 @@ func FindKafkaConsumers(prog *ssa.Program, allFuncs []*ssa.Function, fset *token
 					handler = fn
 				}
 
-				entries = append(entries, DetectedEntry{
-					Source:  "kafka",
-					Handler: handler,
-					Topic:   topic,
-					File:    file,
-					Line:    line,
-				})
+				// When fn is a closure (e.g. a retry.Do callback that calls FetchMessage),
+				// the HandleMessage dispatch is typically in a sibling closure created by
+				// the same parent function. Use fn.Parent() so collectDirectCallees can
+				// find all sibling closures of the consumer loop.
+				loopFn := fn
+				if fn.Parent() != nil {
+					loopFn = fn.Parent()
+				}
 
-				// For ReadMessage/FetchMessage consumers: also detect any message handler
-				// implementations that the consumer loop dispatches to via an interface.
-				// Handles the pattern where a project wraps kafka reading in a loop and
-				// delegates to an injected handler interface, e.g.:
-				//   processBatch → c.handler.HandleBatch(ctx, msgs)
-				// Both the consumer loop function and the concrete handler method are entry points.
-				if !detectedConsumers[fn] {
-					detectedConsumers[fn] = true
-					entries = append(entries, findHandlerImpls(fn, allFuncs, fset, moduleName)...)
+				var implEntries []DetectedEntry
+				if !detectedConsumers[loopFn] {
+					detectedConsumers[loopFn] = true
+					implEntries = findHandlerImpls(loopFn, allFuncs, fset, moduleName)
+				}
+
+				if len(implEntries) > 0 {
+					// Prefer concrete HandleMessage implementations over the raw consumer
+					// loop / closure as the Kafka entry point. The loop is framework code;
+					// the HandleMessage method is where the business logic lives.
+					for i := range implEntries {
+						implEntries[i].Topic = topic
+					}
+					entries = append(entries, implEntries...)
+				} else {
+					// Fallback: no concrete handler found, expose the consumer loop itself.
+					entries = append(entries, DetectedEntry{
+						Source:  "kafka",
+						Handler: handler,
+						Topic:   topic,
+						File:    file,
+						Line:    line,
+					})
 				}
 			}
 		}
@@ -200,7 +222,7 @@ func isKafkaConsumeClaim(fn *ssa.Function) bool {
 	return false
 }
 
-// extractTopicFromArg tries to extract a topic string from a []string slice literal.
+// ExtractTopicFromArg tries to extract a topic string from a []string slice literal.
 // Sarama's Consume takes topics as []string{"my-topic"}, which in SSA becomes:
 //
 //	t0 = local [1]string          (Alloc)
@@ -209,7 +231,7 @@ func isKafkaConsumeClaim(fn *ssa.Function) bool {
 //	t2 = t0[0:1]                  (Slice)
 //
 // We trace the Alloc's referrers to find IndexAddr+Store pairs.
-func extractTopicFromArg(val ssa.Value) string {
+func ExtractTopicFromArg(val ssa.Value) string {
 	// Unwrap Slice to its backing array Alloc.
 	if s, ok := val.(*ssa.Slice); ok {
 		val = s.X
@@ -217,7 +239,7 @@ func extractTopicFromArg(val ssa.Value) string {
 
 	alloc, ok := val.(*ssa.Alloc)
 	if !ok {
-		return extractStringConst(val)
+		return ExtractStringConst(val)
 	}
 
 	if alloc.Referrers() == nil {
@@ -236,7 +258,7 @@ func extractTopicFromArg(val ssa.Value) string {
 			if !ok {
 				continue
 			}
-			if s := extractStringConst(st.Val); s != "" {
+			if s := ExtractStringConst(st.Val); s != "" {
 				return s
 			}
 		}
@@ -416,12 +438,23 @@ func findHandlerImpls(fn *ssa.Function, allFuncs []*ssa.Function, fset *token.Fi
 }
 
 // collectDirectCallees returns fn plus all functions that fn calls directly via
-// static (non-interface) calls within the same module. This gives a one-level
-// lookahead so that handler dispatches buried one call deep are still detected.
+// static (non-interface) calls within the same module, as well as any closures
+// created inside fn (e.g. passed to retry.Do, errgroup.Go). This gives a
+// one-level lookahead so that handler dispatches buried one call or one closure
+// deep are still detected.
 func collectDirectCallees(fn *ssa.Function, moduleName string) []*ssa.Function {
 	result := []*ssa.Function{fn}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			// Include closures created in fn (e.g. func() error { c.handler.Handle(...) }
+			// passed to retry.Do or errgroup.Go).
+			if mc, ok := instr.(*ssa.MakeClosure); ok {
+				if closure, ok2 := mc.Fn.(*ssa.Function); ok2 {
+					result = append(result, closure)
+				}
+				continue
+			}
+
 			callInstr, ok := instr.(ssa.CallInstruction)
 			if !ok {
 				continue
@@ -446,9 +479,19 @@ func collectDirectCallees(fn *ssa.Function, moduleName string) []*ssa.Function {
 // isHandlerDispatch reports whether an interface method call looks like a Kafka
 // message handler dispatch: the method name starts with "Handle" or "Process",
 // and the interface type name contains "handler", "consumer", or "processor".
+// handleErrorSuffixes lists method name suffixes that indicate error/hook callbacks
+// rather than actual message handlers. These are excluded from entry-point detection.
+var handleErrorSuffixes = []string{"Error", "Err", "Panic", "Recover", "Retry", "Failure"}
+
 func isHandlerDispatch(methodName string, ifaceType types.Type) bool {
 	if !strings.HasPrefix(methodName, "Handle") && !strings.HasPrefix(methodName, "Process") {
 		return false
+	}
+	// Exclude error/hook callbacks (e.g. HandleError, HandleErr, HandlePanic).
+	for _, suffix := range handleErrorSuffixes {
+		if strings.HasSuffix(methodName, suffix) {
+			return false
+		}
 	}
 	typeName := strings.ToLower(ifaceType.String())
 	return strings.Contains(typeName, "handler") ||

@@ -27,6 +27,7 @@ type EntryPoint struct {
 	Source        EntryPointSource `json:"source"`
 	Method        string           `json:"method,omitempty"`
 	Path          string           `json:"path,omitempty"`
+	Framework     string           `json:"framework,omitempty"` // e.g. "echo", "gin", "chi", "stdlib"
 	FunctionName  string           `json:"function_name"`
 	File          string           `json:"file,omitempty"`
 	Line          int              `json:"line,omitempty"`

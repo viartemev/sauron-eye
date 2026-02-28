@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	_ "sauron-eye/internal/graph/entrypoints/frameworks/all"
+
 	"sauron-eye/internal/graph"
 )
 

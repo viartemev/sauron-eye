@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"go/token"
 	"log"
 	"os"
 	"path/filepath"
@@ -182,13 +183,33 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 			}
 		}
 
+		// Resolve generated adapter chains to the first non-generated handler.
+		// Frameworks like oapi-codegen place multiple layers of generated glue
+		// between the route registration and the user's business logic:
+		//   serverInterfaceWrapper.Refund (generated)
+		//     → strictHandler.Refund      (generated)
+		//       → UserImpl.Refund         (business logic ← this is what we want)
+		// Following through these layers surfaces the real handler as the entry
+		// point name/location without losing any traversal depth.
+		handlerFile, handlerLine := ep.File, ep.Line
+		if real := resolveGeneratedHandler(handler, cg, fset, module); real != handler {
+			handler = real
+			// Also update the file/line to point at the real handler, not the
+			// generated registration site.
+			if real.Pos().IsValid() {
+				p := fset.Position(real.Pos())
+				handlerFile, handlerLine = p.Filename, p.Line
+			}
+		}
+
 		entryPoint := EntryPoint{
 			Source:        EntryPointSource(ep.Source),
 			Method:        ep.Method,
 			Path:          ep.Path,
+			Framework:     ep.Framework,
 			FunctionName:  handler.RelString(nil),
-			File:          ep.File,
-			Line:          ep.Line,
+			File:          handlerFile,
+			Line:          handlerLine,
 			Topic:         ep.Topic,
 			ConsumerGroup: ep.ConsumerGroup,
 			CommitMode:    ep.CommitMode,
@@ -219,7 +240,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 // VTA takes the CHA graph as its initial graph and the set of all reachable
 // functions, producing a refined graph without the reliability issues of the
 // deprecated pointer-analysis package.
-func (b *CallGraphBuilder) buildCallGraph(prog *ssa.Program) (*callgraph.Graph, bool) {
+func (b *CallGraphBuilder) buildCallGraph(prog *ssa.Program) (cg *callgraph.Graph, usedVTA bool) {
 	// Step 1: build a CHA call graph (used both as fallback and VTA seed).
 	chaCG := cha.CallGraph(prog)
 
@@ -237,15 +258,82 @@ func (b *CallGraphBuilder) buildCallGraph(prog *ssa.Program) (*callgraph.Graph, 
 	}
 
 	// Step 3: refine with VTA.
+	// Named return values allow the deferred recover to set cg=chaCG on panic,
+	// so callers always get a valid (non-nil) graph.
+	cg, usedVTA = chaCG, false
 	defer func() {
-		// VTA is stable, but guard against unexpected panics.
 		if r := recover(); r != nil {
-			log.Printf("[builder] VTA panic (%v); call graph stays as CHA", r)
+			log.Printf("[builder] VTA panic (%v); falling back to CHA", r)
+			cg, usedVTA = chaCG, false
 		}
 	}()
 
 	vtaCG := vta.CallGraph(allFuncs, chaCG)
 	return vtaCG, true
+}
+
+// resolveGeneratedHandler follows the call graph through generated adapter
+// layers (e.g. oapi-codegen's serverInterfaceWrapper → strictHandler → user
+// impl) and returns the first non-generated callee that belongs to the project
+// module. If no such callee is found the original handler is returned unchanged.
+func resolveGeneratedHandler(handler *ssa.Function, cg *callgraph.Graph, fset *token.FileSet, module string) *ssa.Function {
+	if !isFuncGenerated(handler, fset) {
+		return handler
+	}
+
+	visited := make(map[*ssa.Function]bool)
+	var walk func(fn *ssa.Function) *ssa.Function
+	walk = func(fn *ssa.Function) *ssa.Function {
+		if visited[fn] {
+			return nil
+		}
+		visited[fn] = true
+
+		node := cg.Nodes[fn]
+		if node == nil {
+			return nil
+		}
+		for _, edge := range node.Out {
+			callee := edge.Callee.Func
+			if callee == nil || callee.Synthetic != "" {
+				continue
+			}
+			// Must be in the project module.
+			if pkg := callee.Package(); pkg == nil || !strings.HasPrefix(pkg.Pkg.Path(), module) {
+				continue
+			}
+			if !isFuncGenerated(callee, fset) {
+				return callee
+			}
+			if result := walk(callee); result != nil {
+				return result
+			}
+		}
+		return nil
+	}
+
+	if result := walk(handler); result != nil {
+		return result
+	}
+	return handler
+}
+
+// isFuncGenerated reports whether fn's source file is auto-generated.
+// It reuses the detectGeneratedFile logic from traversal.go (same package).
+func isFuncGenerated(fn *ssa.Function, fset *token.FileSet) bool {
+	if !fn.Pos().IsValid() {
+		return false
+	}
+	filename := fset.Position(fn.Pos()).Filename
+	if filename == "" {
+		return false
+	}
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return false
+	}
+	lines := strings.SplitN(string(data), "\n", 20)
+	return detectGeneratedFile(filename, lines)
 }
 
 // parsePkgFilter splits a comma-separated pkg filter string into trimmed prefixes.

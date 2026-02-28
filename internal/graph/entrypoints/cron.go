@@ -52,7 +52,7 @@ func FindCronJobs(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileS
 				}
 
 				call := callInstr.Common()
-				qualName := calleeQualName(call)
+				qualName := CalleeQualName(call)
 
 				// AddFunc style — direct function argument
 				if handlerArgIdx, matched := cronPatterns[qualName]; matched {
@@ -61,7 +61,7 @@ func FindCronJobs(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileS
 						continue
 					}
 
-					handler := extractFunction(args[handlerArgIdx])
+					handler := ExtractFunction(args[handlerArgIdx])
 					if handler == nil {
 						continue
 					}
@@ -90,14 +90,14 @@ func FindCronJobs(prog *ssa.Program, allFuncs []*ssa.Function, fset *token.FileS
 						continue
 					}
 
-					handler := extractFunction(args[p.handlerIdx])
+					handler := ExtractFunction(args[p.handlerIdx])
 					if handler == nil {
 						continue
 					}
 
 					name := ""
 					if p.nameIdx < len(args) {
-						name = extractStringConst(args[p.nameIdx])
+						name = ExtractStringConst(args[p.nameIdx])
 					}
 
 					file := ""
