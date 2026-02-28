@@ -154,7 +154,11 @@ func resolveImplTypesFromCallers(fn *ssa.Function, argIdx int, allFuncs []*ssa.F
 }
 
 // looksLikeGRPCHandler checks if the function signature resembles a gRPC handler.
-// gRPC handlers have signature: func(ctx context.Context, req *Proto) (*Proto, error)
+// Covers all three gRPC method kinds:
+//
+//	Unary:            func(ctx context.Context, req *Proto) (*Proto, error)
+//	Server streaming: func(req *Proto, stream XxxServer) error
+//	Bidi/client str.: func(stream XxxServer) error
 func looksLikeGRPCHandler(fn *types.Func) bool {
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok {
@@ -163,18 +167,29 @@ func looksLikeGRPCHandler(fn *types.Func) bool {
 	params := sig.Params()
 	results := sig.Results()
 
-	// Must have 2 params and 2 results
-	if params.Len() != 2 || results.Len() != 2 {
-		return false
+	// Unary: (context.Context, *Proto) (*Proto, error)
+	if params.Len() == 2 && results.Len() == 2 {
+		if strings.Contains(params.At(0).Type().String(), "context.Context") &&
+			results.At(1).Type().String() == "error" {
+			return true
+		}
 	}
 
-	// First param should be context.Context
-	firstParam := params.At(0).Type().String()
-	if !strings.Contains(firstParam, "context.Context") {
-		return false
+	// Server streaming: (*Proto, XxxServer) error
+	if params.Len() == 2 && results.Len() == 1 && results.At(0).Type().String() == "error" {
+		streamType := params.At(1).Type().String()
+		if strings.Contains(streamType, "grpc.") || strings.Contains(streamType, "Server") {
+			return true
+		}
 	}
 
-	// Last result should be error
-	lastResult := results.At(1).Type().String()
-	return lastResult == "error"
+	// Bidi / client streaming: (XxxServer) error
+	if params.Len() == 1 && results.Len() == 1 && results.At(0).Type().String() == "error" {
+		streamType := params.At(0).Type().String()
+		if strings.Contains(streamType, "grpc.") || strings.Contains(streamType, "Server") {
+			return true
+		}
+	}
+
+	return false
 }

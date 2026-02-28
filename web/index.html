@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -21,6 +21,29 @@
       --http_client:#b45309;
       --producer:   #b91c1c;
       --unknown:    #374151;
+      /* theme-sensitive */
+      --dot-color:     #1e293b;
+      --node-text:     #e6edf3;
+      --node-dim-text: #484f58;
+      --link-color:    #21262d;
+      --source-bg:     #010409;
+      --source-text:   #c9d1d9;
+    }
+    [data-theme="light"] {
+      --bg:       #f6f8fa;
+      --surface:  #ffffff;
+      --surface2: #f0f2f5;
+      --border:   #d0d7de;
+      --text:     #24292f;
+      --muted:    #57606a;
+      --dim:      #8c959f;
+      /* light: keep category colors — they work on both themes */
+      --dot-color:     #dde1e6;
+      --node-text:     #24292f;
+      --node-dim-text: #8c959f;
+      --link-color:    #c8d0d8;
+      --source-bg:     #161b22;
+      --source-text:   #c9d1d9;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -112,7 +135,13 @@
     .group-label {
       padding: 8px 8px 3px; font-size: 10px; font-weight: 600;
       text-transform: uppercase; letter-spacing: .6px; color: var(--dim);
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none;
     }
+    .group-label:hover { color: var(--muted); }
+    .group-arrow { font-size: 10px; transition: transform .15s; flex-shrink: 0; }
+    .group-label.grp-collapsed .group-arrow { transform: rotate(-90deg); }
+    .group-items.grp-collapsed { display: none; }
     .ep-item {
       display: flex; align-items: flex-start; gap: 8px;
       padding: 7px 9px; border-radius: 6px; cursor: pointer;
@@ -155,11 +184,11 @@
     #tree-area {
       flex: 1; position: relative; overflow: hidden;
       background: var(--bg);
-      background-image: radial-gradient(circle at 1px 1px, #1e293b 1px, transparent 0);
+      background-image: radial-gradient(circle at 1px 1px, var(--dot-color) 1px, transparent 0);
       background-size: 28px 28px;
     }
     #tree-svg { width: 100%; height: 100%; }
-    .link          { fill: none; stroke: #21262d; stroke-width: 2; }
+    .link          { fill: none; stroke: var(--link-color); stroke-width: 2; }
     .link-channel  { stroke: #7c3aed; stroke-width: 1.5; stroke-dasharray: 7,3; opacity: .75; }
     .link-deferred { stroke: #d97706; stroke-width: 1.5; stroke-dasharray: 3,3; opacity: .7; }
     .node-g { cursor: pointer; }
@@ -230,8 +259,8 @@
     .detail-item .query  { font-family: monospace; font-size: 10px; color: var(--muted); margin-top: 3px; word-break: break-all; }
     .source-pre {
       font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 11px;
-      line-height: 1.65; background: #010409; border: 1px solid var(--border);
-      border-radius: 6px; padding: 12px; overflow: auto; color: #c9d1d9;
+      line-height: 1.65; background: var(--source-bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 12px; overflow: auto; color: var(--source-text);
       white-space: pre; max-height: 600px;
     }
     /* Go syntax highlight */
@@ -340,6 +369,28 @@
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── THEME TOGGLE ── */
+    #btn-theme {
+      background: none; border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 9px; border-radius: 5px;
+      cursor: pointer; font-size: 14px; line-height: 1;
+      transition: border-color .12s, color .12s, background .12s;
+    }
+    #btn-theme:hover { border-color: var(--muted); color: var(--text); }
+
+    /* ── SIDEBAR COLLAPSE ── */
+    #sidebar { transition: width .2s ease; }
+    #sidebar.sb-collapsed { width: 0 !important; border-right: none; overflow: hidden; }
+    #sidebar-reopen {
+      position: absolute; top: 10px; left: 0; z-index: 20;
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: none; border-radius: 0 5px 5px 0;
+      color: var(--muted); padding: 6px 8px; cursor: pointer;
+      font-size: 13px; display: none; transition: color .12s, background .12s;
+    }
+    #sidebar-reopen:hover { color: var(--text); background: var(--surface2); }
+    #sidebar-reopen.visible { display: block; }
   </style>
 </head>
 <body>
@@ -371,6 +422,7 @@
     <label>pkg</label>
     <input id="pkg-filter-input" type="text" placeholder="e.g. mymodule/internal" spellcheck="false">
   </div>
+  <button id="btn-theme" title="Toggle light/dark mode">☀</button>
   <button class="btn-sm" id="btn-load">↩ Load another</button>
 </div>
 
@@ -380,6 +432,7 @@
       <div style="display:flex;gap:4px">
         <button class="sidebar-toggle-btn" id="btn-hide-stdlib">hide stdlib</button>
         <button class="sidebar-toggle-btn" id="btn-hide-generated">hide gen</button>
+        <button class="sidebar-toggle-btn" id="btn-sidebar-collapse" title="Collapse sidebar">◀</button>
       </div>
     </div>
     <div id="ep-search-wrap">
@@ -389,6 +442,7 @@
   </div>
 
   <div id="tree-area">
+    <button id="sidebar-reopen" title="Open sidebar">▶</button>
     <div id="empty">
       <div class="ei">🌳</div>
       <p>Select an entry point from the sidebar</p>
@@ -681,17 +735,10 @@ document.getElementById('ep-search').addEventListener('input', function() {
     const text = (el.dataset.search || '').toLowerCase();
     el.classList.toggle('hidden', !text.includes(q));
   });
-  // Hide group labels when all items in the group are hidden
-  document.querySelectorAll('.group-label').forEach(lbl => {
-    let next = lbl.nextElementSibling;
-    let anyVisible = false;
-    while (next && !next.classList.contains('group-label')) {
-      if (next.classList.contains('ep-item') && !next.classList.contains('hidden')) {
-        anyVisible = true; break;
-      }
-      next = next.nextElementSibling;
-    }
-    lbl.style.display = anyVisible ? '' : 'none';
+  // Hide groups when all their items are hidden
+  document.querySelectorAll('.ep-group').forEach(group => {
+    const anyVisible = [...group.querySelectorAll('.ep-item')].some(el => !el.classList.contains('hidden'));
+    group.style.display = anyVisible ? '' : 'none';
   });
 });
 
@@ -759,11 +806,26 @@ function buildSidebar(graphs) {
   for (const [src, items] of Object.entries(groups)) {
     if (!items.length) continue;
     const allStdlib = items.every(({ g }) => isStdlib(g.entry_point));
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ep-group';
+
     const lbl = document.createElement('div');
     lbl.className = 'group-label' + (allStdlib ? ' stdlib-only' : '');
-    lbl.textContent = `${labels[src]} (${items.length})`;
-    list.appendChild(lbl);
-    items.forEach(({ g, i }) => list.appendChild(makeEpItem(g, i, icons[src])));
+    lbl.innerHTML = `<span>${labels[src]} <span style="opacity:.55">(${items.length})</span></span><span class="group-arrow">▾</span>`;
+
+    const itemsWrap = document.createElement('div');
+    itemsWrap.className = 'group-items';
+    items.forEach(({ g, i }) => itemsWrap.appendChild(makeEpItem(g, i, icons[src])));
+
+    lbl.addEventListener('click', () => {
+      const collapsed = itemsWrap.classList.toggle('grp-collapsed');
+      lbl.classList.toggle('grp-collapsed', collapsed);
+    });
+
+    groupEl.appendChild(lbl);
+    groupEl.appendChild(itemsWrap);
+    list.appendChild(groupEl);
   }
 }
 
@@ -971,10 +1033,14 @@ function renderTree(graph) {
     .text('defer');
 
   // Function name
+  const cs = getComputedStyle(document.documentElement);
+  const nodeTextColor = cs.getPropertyValue('--node-text').trim() || '#e6edf3';
+  const nodeDimColor  = cs.getPropertyValue('--node-dim-text').trim() || '#484f58';
+
   node.filter(d => !d.data._trunc && d.data._n)
     .append('text')
     .attr('x', 12).attr('y', 22)
-    .attr('fill', '#e6edf3').attr('font-size', 12).attr('font-weight', 600)
+    .attr('fill', nodeTextColor).attr('font-size', 12).attr('font-weight', 600)
     .attr('font-family', '-apple-system, BlinkMacSystemFont, sans-serif')
     .text(d => { const s = shortName(d.data._n.function_name); return s.length > 23 ? s.slice(0,21)+'…' : s; });
 
@@ -982,7 +1048,7 @@ function renderTree(graph) {
   node.filter(d => !d.data._trunc && d.data._n)
     .append('text')
     .attr('x', 12).attr('y', 36)
-    .attr('fill', '#484f58').attr('font-size', 10).attr('font-family', 'monospace')
+    .attr('fill', nodeDimColor).attr('font-size', 10).attr('font-family', 'monospace')
     .text(d => shortFile(d.data._n.file, d.data._n.line));
 
   // Meta badges (inline SVG micro-badges)
@@ -1261,6 +1327,39 @@ document.addEventListener('mouseup', () => {
   detailPanel.classList.remove('resizing');
   document.body.style.userSelect = '';
   document.body.style.cursor = '';
+});
+
+// ════════════════════════════════════════════════════════
+//  THEME TOGGLE
+// ════════════════════════════════════════════════════════
+(function() {
+  const root = document.documentElement;
+  const btn  = document.getElementById('btn-theme');
+  function applyTheme(t) {
+    root.dataset.theme = t;
+    // dark mode → show sun (click to go light); light mode → show moon (click to go dark)
+    btn.textContent = t === 'dark' ? '☀' : '🌙';
+    btn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    localStorage.setItem('sauron-theme', t);
+    // Re-render so SVG node text picks up new CSS var values
+    if (_activeGraphIdx !== null && DATA) renderTree(DATA.graphs[_activeGraphIdx]);
+  }
+  const saved = localStorage.getItem('sauron-theme') || 'dark';
+  applyTheme(saved);
+  btn.addEventListener('click', () =>
+    applyTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'));
+})();
+
+// ════════════════════════════════════════════════════════
+//  SIDEBAR COLLAPSE / EXPAND
+// ════════════════════════════════════════════════════════
+document.getElementById('btn-sidebar-collapse').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.add('sb-collapsed');
+  document.getElementById('sidebar-reopen').classList.add('visible');
+});
+document.getElementById('sidebar-reopen').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('sb-collapsed');
+  document.getElementById('sidebar-reopen').classList.remove('visible');
 });
 </script>
 </body>
