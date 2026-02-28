@@ -292,7 +292,12 @@ func (t *Traversal) shouldSkip(fn *ssa.Function) bool {
 		return t.shouldSkip(fn.Origin())
 	}
 	if fn.Package() == nil {
-		return true
+		if fn.Synthetic != "" {
+			return true
+		}
+		// Anonymous function literal (closure): Package()==nil is normal for closures.
+		// Gate only on whether the source file is external (stdlib/module-cache).
+		return t.isExternal(fn)
 	}
 	// Synthetic functions (interface method wrappers, bound-method thunks) —
 	// skip to avoid explosion; they don't contain real logic.

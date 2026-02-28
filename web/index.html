@@ -344,20 +344,7 @@
     .dropzone:hover, .dropzone.over { border-color: #7c3aed; background: rgba(124,58,237,.05); }
     .dropzone p    { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
     .dropzone span { color: var(--dim); font-size: 11px; }
-    #paste {
-      width: 100%; height: 100px; background: var(--surface2);
-      border: 1px solid var(--border); border-radius: 6px;
-      padding: 10px; color: var(--text); font-family: monospace;
-      font-size: 11px; resize: none; outline: none; margin-bottom: 12px;
-    }
-    #paste:focus { border-color: #7c3aed; }
-    #go-btn {
-      width: 100%; background: #7c3aed; color: #fff;
-      border: none; border-radius: 6px; padding: 10px;
-      font-size: 13px; font-weight: 600; cursor: pointer;
-    }
-    #go-btn:hover { background: #6d28d9; }
-    #uerr { color: #f87171; font-size: 12px; margin-top: 8px; min-height: 18px; }
+    #uerr { color: #f87171; font-size: 12px; margin-top: 10px; min-height: 18px; }
 
     /* ── EMPTY STATE ── */
     #empty {
@@ -412,14 +399,12 @@
 <div id="upload">
   <div class="ucard">
     <div class="logo-big">👁 Sauron Eye</div>
-    <div class="tagline">Call Graph Visualizer — drop a <code>callgraph.json</code> or paste below</div>
+    <div class="tagline">Call Graph Visualizer — upload a <code>callgraph.json</code></div>
     <div class="dropzone" id="dropzone">
-      <p>Drop JSON file here</p>
+      <p>Drop <code>callgraph.json</code> here</p>
       <span>or click to browse</span>
-      <input type="file" id="file-in" accept=".json,.txt" style="display:none">
+      <input type="file" id="file-in" accept=".json" style="display:none">
     </div>
-    <textarea id="paste" placeholder="Paste sauron-eye JSON output…"></textarea>
-    <button id="go-btn">Analyze →</button>
     <div id="uerr"></div>
   </div>
 </div>
@@ -436,7 +421,7 @@
     <input id="pkg-filter-input" type="text" placeholder="e.g. mymodule/internal" spellcheck="false">
   </div>
   <button id="btn-theme" title="Toggle light/dark mode">☀</button>
-  <button class="btn-sm" id="btn-load">↩ Load another</button>
+  <button class="btn-sm" id="btn-load" title="Back to main page">← Main</button>
 </div>
 
 <div id="layout" style="display:none">
@@ -693,11 +678,9 @@ let pkgFilter = '';   // package path prefix; empty = show all
 //  UPLOAD
 // ════════════════════════════════════════════════════════
 function tryLoad(text) {
-  const idx = text.indexOf('{');
-  if (idx === -1) { showErr('No JSON found in input'); return; }
   try {
-    const data = JSON.parse(text.slice(idx));
-    if (!data.graphs) throw new Error('Missing "graphs" key — is this a sauron-eye output?');
+    const data = JSON.parse(text.trim());
+    if (!data.graphs) throw new Error('Missing "graphs" key — is this a sauron-eye callgraph.json?');
     DATA = data;
     document.getElementById('uerr').textContent = '';
     initApp();
@@ -718,11 +701,6 @@ document.getElementById('file-in').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
   const r = new FileReader(); r.onload = ev => tryLoad(ev.target.result); r.readAsText(f);
 });
-document.getElementById('go-btn').addEventListener('click', () => {
-  const t = document.getElementById('paste').value.trim();
-  if (!t) { showErr('Paste JSON or upload a file'); return; }
-  tryLoad(t);
-});
 document.getElementById('btn-hide-stdlib').addEventListener('click', function() {
   this.classList.toggle('active');
   document.getElementById('ep-list').classList.toggle('hide-stdlib');
@@ -737,6 +715,9 @@ document.getElementById('btn-hide-generated').addEventListener('click', function
 
 document.getElementById('btn-load').addEventListener('click', () => {
   document.getElementById('upload').classList.remove('gone');
+  // Reset file input so the same file can be re-selected
+  document.getElementById('file-in').value = '';
+  document.getElementById('uerr').textContent = '';
   clearTree();
 });
 
