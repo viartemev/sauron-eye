@@ -1,7 +1,54 @@
     # AI Code Reviewer — Architecture & Design Document
 
-> Система автоматического анализа кода на основе Claude API для всех Go-репозиториев в GitLab.  
+> Система автоматического анализа кода на основе Claude API для всех Go-репозиториев в GitLab.
 > Находит проблемы в бизнес-логике, архитектуре и системной надёжности через анализ путей выполнения.
+
+---
+
+## Текущая реализация (что уже работает)
+
+Этот репозиторий называется **sauron-eye** (Go module: `sauron-eye`, Go 1.26+).
+Реализованы два CLI-инструмента — они являются фундаментом для полной системы, описанной ниже:
+
+### `callgraph` — построитель графов вызовов
+
+Находится в `cmd/callgraph/`. Анализирует Go-проект и выводит call graphs в JSON.
+
+**Стек:**
+- `golang.org/x/tools/go/packages` — загрузка пакетов
+- `golang.org/x/tools/go/ssa` + `ssautil` — SSA представление
+- `golang.org/x/tools/go/callgraph/cha` → `vta` — построение call graph (CHA→VTA, **не PTA**)
+
+**Архитектурные решения, принятые в реализации:**
+- Алгоритм **CHA → VTA** (VTA рафинирует CHA, стабилен, без timeout'ов). PTA из документа ниже заменён на VTA.
+- `Traversal.BuildNode` использует "sliding window" visited set: добавляем на входе, удаляем при выходе — соседние ветки могут посещать ту же функцию.
+- Дополнительный SSA scan при обходе — ловит статические вызовы, которые CHA/VTA пропустил (особенно в сгенерированных клиентах).
+- Синтетические `$bound`/`$thunk` обёртки разворачиваются до реального метода в builder'е.
+- Исходный код функции извлекается до 150 строк, кешируется построчно.
+- `generated: true` выставляется для узлов из auto-generated файлов (`*.pb.go`, `*_gen.go`, `mock_*.go`, и т.д.).
+- `pkg-filter` по умолчанию = имя модуля из `go.mod`.
+
+**Детектируемые entry points:**
+- HTTP: Gin / Echo / Chi / `net/http`
+- Kafka: sarama (Shopify + IBM), confluent-kafka-go, segmentio/kafka-go
+- gRPC: `RegisterXxxServer` pattern
+- Cron: robfig/cron, go-co-op/gocron
+
+**Метаданные каждого узла:** db_calls, tx_ops, http_calls, kafka_ops, sync_ops, redis_ops, channel_ops.
+
+**Concurrency analysis:** `SharedResourceAnalyzer` строит инвертированный индекс таблиц → entry points, находит конфликты (2+ entry points, минимум 1 WRITE), детектирует защитные механизмы (FOR UPDATE, WHERE version=N, Redis SetNX, atomic UPDATE WHERE).
+
+### `review` — интерактивный AI-ревьюер
+
+Находится в `cmd/review/`. Строит call graph, показывает список entry points, отправляет выбранный граф в Claude.
+
+- `internal/review/claude.go` — прямой HTTP-клиент к `https://api.anthropic.com/v1/messages`, max_tokens=8192. При отсутствии API key — mock (выводит промпт).
+- `internal/review/prompt.go` — формирует system prompt + user message с графом, конфликтами и содержимым `checks.md`.
+- `checks.md` кладётся в корень **анализируемого проекта** (не этого репо). Если файл не найден — инструмент предупреждает и использует generic prompt.
+
+### Веб-визуализатор
+
+`web/index.html` — single-file визуализатор. Загружает `graph.json`, рисует интерактивный граф.
 
 ---
 
@@ -420,11 +467,12 @@ overrides:
 ### Стек технологий
 
 ```
-golang.org/x/tools/go/packages   — загрузка пакетов с типами
-golang.org/x/tools/go/ssa        — SSA представление (Static Single Assignment)
+golang.org/x/tools/go/packages    — загрузка пакетов с типами
+golang.org/x/tools/go/ssa         — SSA представление (Static Single Assignment)
 golang.org/x/tools/go/ssa/ssautil — утилиты для SSA
-golang.org/x/tools/go/callgraph/pta — Pointer Analysis (точное разрешение интерфейсов)
-golang.org/x/tools/go/callgraph/cha — CHA (быстрый fallback)
+golang.org/x/tools/go/callgraph/cha — CHA (Class Hierarchy Analysis, быстрый, seed для VTA)
+golang.org/x/tools/go/callgraph/vta — VTA (Variable Type Analysis, рафинирует CHA)
+// NOTE: PTA (Pointer Analysis) заменён на CHA→VTA в реализации — стабильнее, без timeout'ов
 ```
 
 ### Алгоритм построения
@@ -439,8 +487,8 @@ golang.org/x/tools/go/callgraph/cha — CHA (быстрый fallback)
 │  2. ssautil.AllPackages() → prog.Build()                 │
 │        │                                                 │
 │        ▼                                                 │
-│  3. pta.Analyze() → точный call graph                    │
-│     (fallback: cha.CallGraph() если pta timeout/OOM)     │
+│  3. cha.CallGraph() → vta.CallGraph() — точный call graph │
+│     (реализовано через CHA→VTA; PTA заменён на VTA)      │
 │        │                                                 │
 │        ▼                                                 │
 │  4. EntryPointFinder.FindAll()                           │

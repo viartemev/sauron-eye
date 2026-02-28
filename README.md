@@ -26,7 +26,7 @@ against a configurable checklist of production reliability and security rules.
 
 | Requirement | Details |
 |------------|---------|
-| Go | 1.22+ |
+| Go | 1.26+ |
 | Project to analyse | Any module-based Go project |
 | `ANTHROPIC_API_KEY` | Only required for `review` — set in environment or via `-api-key` flag |
 
@@ -195,10 +195,12 @@ context or as an explicit argument to both repositories.
 
 ## `checks.md` — the review checklist
 
-`checks.md` at the project root defines what the LLM looks for in every review.
+`checks.md` at the **analysed project's** root defines what the LLM looks for in every review.
 It is plain Markdown — edit it to add, remove, or tune rules for your codebase.
 
-The default file covers eight categories:
+If no `checks.md` is found the tool warns and continues with a generic Go best-practices prompt.
+
+A typical file covers eight categories:
 
 | Category | Examples |
 |----------|---------|
@@ -341,7 +343,8 @@ Each `CallNode`:
   "file": "/abs/path/service.go",
   "line": 47,
   "category": "service",
-  "source_code": "func (s *Service) ...",
+  "generated": false,     // true when the source file is auto-generated (*.pb.go, *_gen.go, etc.)
+  "source_code": "func (s *Service) ...",   // up to 150 lines; omitted with -no-source
   "db_calls":    [ { "package": "...", "method": "Exec", "query": "INSERT ...", "line": 51 } ],
   "tx_ops":      [ { "operation": "Begin", "line": 49 } ],
   "http_calls":  [ { "line": 88, "has_timeout": true, "is_retried": false } ],
@@ -428,7 +431,7 @@ cmd/
 
 internal/
   graph/
-    builder.go       SSA loader + call graph construction
+    builder.go       SSA loader + CHA→VTA call graph construction
     traversal.go     DFS traversal with metadata extraction
     metadata.go      SSA instruction → DBCall / TxOp / HTTPCall / …
     concurrency.go   Shared resource analyser
@@ -448,5 +451,6 @@ internal/
 web/
   index.html     Single-file interactive visualiser
 
-checks.md        Configurable review checklist for the LLM
+checks.md        Checklist placed in the analysed project's root (not bundled here)
+                 review warns and continues with generic checks when absent
 ```
