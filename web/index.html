@@ -63,8 +63,16 @@
       display: flex; align-items: center;
       padding: 0 16px; gap: 12px; flex-shrink: 0;
     }
-    .logo { font-weight: 700; font-size: 14px; color: #a78bfa; letter-spacing: -0.3px; display: flex; align-items: center; gap: 6px; }
+    .logo { font-weight: 700; font-size: 14px; color: #a78bfa; letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
     .logo span { color: var(--muted); font-weight: 400; font-size: 13px; }
+    .logo-img { height: 26px; width: auto; display: block; }
+    .btn-back {
+      background: none; border: none; color: var(--muted);
+      font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+      border-radius: 5px; transition: color .12s, background .12s;
+      display: flex; align-items: center;
+    }
+    .btn-back:hover { color: var(--text); background: var(--surface2); }
     .chip {
       display: flex; align-items: center; gap: 5px;
       background: var(--surface2); border: 1px solid var(--border);
@@ -334,7 +342,8 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 40px; width: 540px;
     }
-    .ucard .logo-big { font-size: 28px; font-weight: 800; color: #a78bfa; margin-bottom: 4px; }
+    .ucard .logo-big { font-size: 28px; font-weight: 800; color: #a78bfa; margin-bottom: 4px; display: flex; align-items: center; gap: 12px; }
+    .logo-img-big { height: 48px; width: auto; display: block; }
     .ucard .tagline  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
     .dropzone {
       border: 2px dashed var(--border); border-radius: 8px;
@@ -398,7 +407,7 @@
 <!-- ══ UPLOAD SCREEN ══ -->
 <div id="upload">
   <div class="ucard">
-    <div class="logo-big">👁 Sauron Eye</div>
+    <div class="logo-big"><img src="../assets/logo.png" class="logo-img-big" alt="">Sauron Eye</div>
     <div class="tagline">Call Graph Visualizer — upload a <code>callgraph.json</code></div>
     <div class="dropzone" id="dropzone">
       <p>Drop <code>callgraph.json</code> here</p>
@@ -411,7 +420,8 @@
 
 <!-- ══ APP ══ -->
 <div id="topbar" style="display:none">
-  <div class="logo">👁 Sauron Eye <span id="svc-name"></span></div>
+  <button class="btn-back" id="btn-load" title="Back to main page">←</button>
+  <div class="logo"><img src="../assets/logo.png" class="logo-img" alt="">Sauron Eye <span id="svc-name"></span></div>
   <div class="chip">entries <b id="st-ep">0</b></div>
   <div class="chip">db_calls <b id="st-db">0</b></div>
   <div class="chip" id="st-conf-chip">conflicts <b id="st-conf">0</b></div>
@@ -421,7 +431,6 @@
     <input id="pkg-filter-input" type="text" placeholder="e.g. mymodule/internal" spellcheck="false">
   </div>
   <button id="btn-theme" title="Toggle light/dark mode">☀</button>
-  <button class="btn-sm" id="btn-load" title="Back to main page">← Main</button>
 </div>
 
 <div id="layout" style="display:none">
